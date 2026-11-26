@@ -1,21 +1,39 @@
 import express from 'express';
 import bcrypt from 'bcryptjs';
+import crypto from 'crypto';
 import { pool, query } from '../db/pool.js';
 import { authenticate, requireRole } from '../middleware/auth.js';
+import {
+  generateOnboardingCode,
+  generateReceiptNumber,
+  MEMBERSHIP_STATUSES,
+  PAYMENT_METHODS,
+  phoneKey,
+  PHONE_KEY_SQL,
+} from '../utils/codes.js';
+import { gymToday } from '../config.js';
+import { planInvoiceTitle, quotePlanForMember } from '../utils/pricing.js';
 
 const router = express.Router();
 
 router.use(authenticate, requireRole('owner'));
 
-function generateOnboardingCode(name, phone) {
-  const prefix = (name || 'GYM')
-    .replace(/[^a-zA-Z]/g, '')
-    .toUpperCase()
-    .slice(0, 3)
-    .padEnd(3, 'X');
-  const phoneDigits = (phone || '').replace(/\D/g, '').slice(-3).padStart(3, '0');
-  const rand = Math.floor(100 + Math.random() * 900);
-  return `${prefix}-${phoneDigits}${rand}`;
+function parseId(value) {
+  const n = Number(value);
+  return Number.isInteger(n) && n > 0 ? n : null;
+}
+
+/** Another user (optionally excluding one id) already uses this phone number, compared by national number (last 10 digits). */
+async function phoneTaken(db, phone, excludeUserId = null) {
+  const digits = phoneKey(phone);
+  if (!digits) return false;
+  const { rowCount } = await db.query(
+    `SELECT 1 FROM users
+     WHERE ${PHONE_KEY_SQL('phone')} = $1
+       AND ($2::int IS NULL OR id <> $2::int)`,
+    [digits, excludeUserId]
+  );
+  return rowCount > 0;
 }
 
 // GET /api/members
@@ -78,7 +96,8 @@ router.get('/', async (req, res) => {
 // GET /api/members/:id
 router.get('/:id', async (req, res) => {
   try {
-    const memberId = req.params.id;
+    const memberId = parseId(req.params.id);
+    if (!memberId) return res.status(400).json({ error: 'Invalid member id' });
     const memberRes = await query(
       `SELECT
          u.id, u.email, u.full_name, u.phone, u.is_active, u.created_at,
@@ -122,108 +141,128 @@ router.get('/:id', async (req, res) => {
 
 // POST /api/members - Owner onboards a new client using ONLY Name + Phone (generates onboarding code)
 router.post('/', async (req, res) => {
+  const {
+    full_name,
+    phone,
+    plan_id,
+    create_invoice = true,
+    initial_payment_amount = 0,
+    payment_method = 'UPI',
+  } = req.body;
+
+  if (!full_name || !String(full_name).trim() || !phone || !String(phone).trim()) {
+    return res.status(400).json({ error: 'Client Name and Phone Number are required to generate onboarding code' });
+  }
+  if (!String(phone).replace(/\D/g, '')) {
+    return res.status(400).json({ error: 'Please enter a valid phone number' });
+  }
+  const initialPayment = Math.max(0, Number(initial_payment_amount || 0));
+  if (!Number.isFinite(initialPayment)) {
+    return res.status(400).json({ error: 'Initial payment must be a valid number' });
+  }
+  if (initialPayment > 0 && !PAYMENT_METHODS.includes(payment_method)) {
+    return res.status(400).json({ error: `Payment method must be one of: ${PAYMENT_METHODS.join(', ')}` });
+  }
+
   const client = await pool.connect();
+  let inTransaction = false;
   try {
-    const {
-      full_name,
-      phone,
-      plan_id,
-      create_invoice = true,
-      initial_payment_amount = 0,
-      payment_method = 'UPI',
-    } = req.body;
-
-    if (!full_name || !full_name.trim() || !phone || !phone.trim()) {
-      return res.status(400).json({ error: 'Client Name and Phone Number are required to generate onboarding code' });
-    }
-
     await client.query('BEGIN');
+    inTransaction = true;
 
-    const digitsOnly = phone.replace(/\D/g, '');
-    if (digitsOnly) {
-      const dupPhone = await client.query(
-        `SELECT id FROM users WHERE REGEXP_REPLACE(COALESCE(phone, ''), '[^0-9]', '', 'g') = $1`,
-        [digitsOnly]
-      );
-      if (dupPhone.rowCount > 0) {
-        await client.query('ROLLBACK');
-        return res.status(409).json({ error: 'A member with this phone number is already registered' });
-      }
+    if (await phoneTaken(client, phone)) {
+      await client.query('ROLLBACK');
+      inTransaction = false;
+      return res.status(409).json({ error: 'A member with this phone number is already registered' });
     }
 
-    const tempPassHash = await bcrypt.hash(`temp-${Date.now()}`, 10);
+    // Unusable random password until the member sets their own during onboarding.
+    const tempPassHash = await bcrypt.hash(crypto.randomBytes(24).toString('hex'), 10);
     const uRes = await client.query(
       `INSERT INTO users (email, password_hash, role, full_name, phone)
        VALUES (NULL, $1, 'customer', $2, $3)
        RETURNING id, email, role, full_name, phone, is_active`,
-      [tempPassHash, full_name.trim(), phone.trim()]
+      [tempPassHash, String(full_name).trim(), String(phone).trim()]
     );
     const user = uRes.rows[0];
     const memberCode = `IPF-${1000 + user.id}`;
-    const onboardingCode = generateOnboardingCode(full_name, phone);
+
+    // Pick a code not already in use (collisions are astronomically rare, but never 500 on one).
+    let onboardingCode = null;
+    for (let attempt = 0; attempt < 5 && !onboardingCode; attempt++) {
+      const candidate = generateOnboardingCode(full_name);
+      const taken = await client.query('SELECT 1 FROM member_profiles WHERE UPPER(onboarding_code) = $1', [
+        candidate,
+      ]);
+      if (taken.rowCount === 0) onboardingCode = candidate;
+    }
+    if (!onboardingCode) throw new Error('Could not generate a unique onboarding code');
 
     let plan = null;
     if (plan_id) {
-      const pRes = await client.query('SELECT * FROM membership_plans WHERE id = $1', [plan_id]);
+      const pRes = await client.query('SELECT * FROM membership_plans WHERE id = $1', [Number(plan_id)]);
       plan = pRes.rows[0] || null;
+      if (!plan) {
+        await client.query('ROLLBACK');
+        inTransaction = false;
+        return res.status(404).json({ error: 'Selected membership plan was not found' });
+      }
     }
 
-    const start = new Date();
-    let end = null;
-    if (plan) {
-      end = new Date(start);
-      end.setDate(end.getDate() + plan.duration_days);
-    }
+    // Dates come from PostgreSQL in the gym's timezone (the old toISOString() used UTC,
+    // so a member added before 5:30 AM IST got yesterday's start date).
+    const datesRes = await client.query(
+      'SELECT CURRENT_DATE::text AS start_date, (CURRENT_DATE + $1::int)::text AS end_date',
+      [plan ? plan.duration_days : 0]
+    );
+    const startDate = datesRes.rows[0].start_date;
+    const endDate = plan ? datesRes.rows[0].end_date : null;
 
     await client.query(
       `INSERT INTO member_profiles (
          user_id, member_code, onboarding_code, onboarding_completed,
          plan_id, plan_start_date, plan_end_date, membership_status
        ) VALUES ($1, $2, $3, FALSE, $4, $5, $6, 'active')`,
-      [
-        user.id,
-        memberCode,
-        onboardingCode,
-        plan ? plan.id : null,
-        start.toISOString().slice(0, 10),
-        end ? end.toISOString().slice(0, 10) : null,
-      ]
+      [user.id, memberCode, onboardingCode, plan ? plan.id : null, startDate, endDate]
     );
 
     if (plan && create_invoice) {
-      const amountDue = Number(plan.price);
-      const paidNow = Math.min(amountDue, Math.max(0, Number(initial_payment_amount || 0)));
+      // A brand-new member always gets the plan's first-month (joining) price, if one is set.
+      const quote = await quotePlanForMember(client, plan, user.id);
+      const amountDue = quote.amount;
+      const paidNow = Math.min(amountDue, initialPayment);
       const invStatus = paidNow >= amountDue ? 'paid' : paidNow > 0 ? 'partial' : 'pending';
 
       const invRes = await client.query(
         `INSERT INTO fee_invoices (
-           member_id, plan_id, title, amount_due, amount_paid, due_date, status, period_start, period_end
-         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id`,
+           member_id, plan_id, title, amount_due, amount_paid, due_date, status, period_start, period_end, pricing_tier
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id`,
         [
           user.id,
           plan.id,
-          `${plan.name} Membership`,
+          planInvoiceTitle(plan, quote.tier),
           amountDue,
           paidNow,
-          start.toISOString().slice(0, 10),
+          startDate,
           invStatus,
-          start.toISOString().slice(0, 10),
-          end.toISOString().slice(0, 10),
+          startDate,
+          endDate,
+          quote.tier,
         ]
       );
 
       if (paidNow > 0) {
-        const receipt = `RCP-${Date.now().toString().slice(-6)}`;
         await client.query(
           `INSERT INTO payments (
              invoice_id, member_id, amount, payment_method, receipt_number, reference_note, recorded_by
            ) VALUES ($1,$2,$3,$4,$5,'Enrollment payment',$6)`,
-          [invRes.rows[0].id, user.id, paidNow, payment_method, receipt, req.user.id]
+          [invRes.rows[0].id, user.id, paidNow, payment_method, generateReceiptNumber(gymToday()), req.user.id]
         );
       }
     }
 
     await client.query('COMMIT');
+    inTransaction = false;
     res.status(201).json({
       message: 'Client onboarded successfully! Share the onboarding code with the client.',
       member: {
@@ -235,7 +274,7 @@ router.post('/', async (req, res) => {
       onboarding_code: onboardingCode,
     });
   } catch (err) {
-    await client.query('ROLLBACK');
+    if (inTransaction) await client.query('ROLLBACK').catch(() => {});
     console.error('Create member error:', err);
     res.status(500).json({ error: 'Failed to onboard member' });
   } finally {
@@ -243,86 +282,129 @@ router.post('/', async (req, res) => {
   }
 });
 
-// PUT /api/members/:id
+// Normalisers for editable fields. Empty string → NULL so the owner can actually clear a field
+// (the old COALESCE(...) update silently ignored every attempt to blank a value).
+const emptyToNull = (v) => (v === undefined || v === null || String(v).trim() === '' ? null : String(v).trim());
+const numberOrNull = (v) => {
+  if (v === undefined || v === null || v === '') return null;
+  const n = Number(v);
+  if (!Number.isFinite(n) || n < 0) throw new RangeError('must be a non-negative number');
+  return n;
+};
+const dateOrNull = (v) => {
+  const s = emptyToNull(v);
+  if (s === null) return null;
+  if (!/^\d{4}-\d{2}-\d{2}/.test(s)) throw new RangeError('must be a date (YYYY-MM-DD)');
+  return s.slice(0, 10);
+};
+
+const PROFILE_FIELDS = {
+  plan_id: (v) => {
+    if (v === undefined || v === null || v === '') return null;
+    const id = parseId(v);
+    if (!id) throw new RangeError('must be a valid plan id');
+    return id;
+  },
+  plan_start_date: dateOrNull,
+  plan_end_date: dateOrNull,
+  membership_status: (v) => {
+    if (!MEMBERSHIP_STATUSES.includes(v)) throw new RangeError(`must be one of ${MEMBERSHIP_STATUSES.join(', ')}`);
+    return v;
+  },
+  gender: emptyToNull,
+  date_of_birth: dateOrNull,
+  address: emptyToNull,
+  emergency_contact_name: emptyToNull,
+  emergency_contact_phone: emptyToNull,
+  height_cm: numberOrNull,
+  weight_kg: numberOrNull,
+  fitness_goal: emptyToNull,
+  notes: emptyToNull,
+};
+
+// PUT /api/members/:id — only the fields present in the body are changed.
 router.put('/:id', async (req, res) => {
-  const client = await pool.connect();
+  const memberId = parseId(req.params.id);
+  if (!memberId) return res.status(400).json({ error: 'Invalid member id' });
+  const body = req.body || {};
+
+  // Validate & normalise before touching the database.
+  const userSets = [];
+  const userParams = [];
+  const profileSets = [];
+  const profileParams = [];
   try {
-    const memberId = req.params.id;
-    const {
-      full_name,
-      phone,
-      is_active,
-      plan_id,
-      plan_start_date,
-      plan_end_date,
-      membership_status,
-      gender,
-      date_of_birth,
-      address,
-      emergency_contact_name,
-      emergency_contact_phone,
-      height_cm,
-      weight_kg,
-      fitness_goal,
-      notes,
-    } = req.body;
+    if ('full_name' in body) {
+      const name = emptyToNull(body.full_name);
+      if (!name) return res.status(400).json({ error: 'Full name cannot be empty' });
+      userParams.push(name);
+      userSets.push(`full_name = $${userParams.length}`);
+    }
+    if ('phone' in body) {
+      const phone = emptyToNull(body.phone);
+      if (!phone || !phone.replace(/\D/g, '')) return res.status(400).json({ error: 'Please enter a valid phone number' });
+      userParams.push(phone);
+      userSets.push(`phone = $${userParams.length}`);
+    }
+    if ('is_active' in body) {
+      userParams.push(body.is_active === true || body.is_active === 'true');
+      userSets.push(`is_active = $${userParams.length}`);
+    }
+    for (const [field, normalise] of Object.entries(PROFILE_FIELDS)) {
+      if (!(field in body)) continue;
+      try {
+        profileParams.push(normalise(body[field]));
+      } catch (e) {
+        return res.status(400).json({ error: `${field.replace(/_/g, ' ')} ${e.message}` });
+      }
+      profileSets.push(`${field} = $${profileParams.length}`);
+    }
+  } catch (err) {
+    return res.status(400).json({ error: err.message });
+  }
 
+  const client = await pool.connect();
+  let inTransaction = false;
+  try {
     await client.query('BEGIN');
+    inTransaction = true;
 
-    const userRes = await client.query(
-      `UPDATE users
-       SET full_name = COALESCE($1, full_name),
-           phone = COALESCE($2, phone),
-           is_active = COALESCE($3, is_active),
-           updated_at = NOW()
-       WHERE id = $4 AND role = 'customer'
-       RETURNING id`,
-      [full_name ? full_name.trim() : null, phone !== undefined ? phone : null, is_active !== undefined ? Boolean(is_active) : null, memberId]
-    );
-    if (userRes.rowCount === 0) {
+    const exists = await client.query("SELECT 1 FROM users WHERE id = $1 AND role = 'customer' FOR UPDATE", [memberId]);
+    if (exists.rowCount === 0) {
       await client.query('ROLLBACK');
+      inTransaction = false;
       return res.status(404).json({ error: 'Member not found' });
     }
 
-    await client.query(
-      `UPDATE member_profiles
-       SET plan_id = COALESCE($1, plan_id),
-           plan_start_date = COALESCE($2, plan_start_date),
-           plan_end_date = COALESCE($3, plan_end_date),
-           membership_status = COALESCE($4, membership_status),
-           gender = COALESCE($5, gender),
-           date_of_birth = COALESCE($6, date_of_birth),
-           address = COALESCE($7, address),
-           emergency_contact_name = COALESCE($8, emergency_contact_name),
-           emergency_contact_phone = COALESCE($9, emergency_contact_phone),
-           height_cm = COALESCE($10, height_cm),
-           weight_kg = COALESCE($11, weight_kg),
-           fitness_goal = COALESCE($12, fitness_goal),
-           notes = COALESCE($13, notes),
-           updated_at = NOW()
-       WHERE user_id = $14`,
-      [
-        plan_id || null,
-        plan_start_date || null,
-        plan_end_date || null,
-        membership_status || null,
-        gender !== undefined ? gender : null,
-        date_of_birth || null,
-        address !== undefined ? address : null,
-        emergency_contact_name !== undefined ? emergency_contact_name : null,
-        emergency_contact_phone !== undefined ? emergency_contact_phone : null,
-        height_cm ? Number(height_cm) : null,
-        weight_kg ? Number(weight_kg) : null,
-        fitness_goal !== undefined ? fitness_goal : null,
-        notes !== undefined ? notes : null,
-        memberId,
-      ]
-    );
+    if ('phone' in body && (await phoneTaken(client, body.phone, memberId))) {
+      await client.query('ROLLBACK');
+      inTransaction = false;
+      return res.status(409).json({ error: 'Another account already uses this phone number' });
+    }
+
+    if (userSets.length > 0) {
+      userParams.push(memberId);
+      await client.query(
+        `UPDATE users SET ${userSets.join(', ')}, updated_at = NOW() WHERE id = $${userParams.length}`,
+        userParams
+      );
+    }
+    if (profileSets.length > 0) {
+      profileParams.push(memberId);
+      await client.query(
+        `UPDATE member_profiles SET ${profileSets.join(', ')}, updated_at = NOW() WHERE user_id = $${profileParams.length}`,
+        profileParams
+      );
+    }
 
     await client.query('COMMIT');
+    inTransaction = false;
     res.json({ message: 'Member updated successfully' });
   } catch (err) {
-    await client.query('ROLLBACK');
+    if (inTransaction) await client.query('ROLLBACK').catch(() => {});
+    if (err.code === '23503') {
+      return res.status(400).json({ error: 'Selected membership plan does not exist' });
+    }
     console.error('Update member error:', err);
     res.status(500).json({ error: 'Failed to update member' });
   } finally {

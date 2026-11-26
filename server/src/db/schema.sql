@@ -22,6 +22,12 @@ CREATE TABLE IF NOT EXISTS gym_settings (
   address TEXT,
   opening_hours VARCHAR(120) DEFAULT '05:30 AM - 10:30 PM',
   currency_symbol VARCHAR(10) DEFAULT '₹',
+  logo_image TEXT,
+  whatsapp VARCHAR(30),
+  website VARCHAR(255),
+  instagram VARCHAR(120),
+  upi_id VARCHAR(100),
+  gstin VARCHAR(20),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
@@ -30,6 +36,8 @@ CREATE TABLE IF NOT EXISTS membership_plans (
   name VARCHAR(100) NOT NULL,
   duration_days INTEGER NOT NULL CHECK (duration_days > 0),
   price NUMERIC(10, 2) NOT NULL CHECK (price >= 0),
+  -- Optional price for a member's FIRST bill on this plan (joining month). Renewals use `price`.
+  first_month_price NUMERIC(10, 2) CHECK (first_month_price >= 0),
   description TEXT,
   is_active BOOLEAN NOT NULL DEFAULT TRUE,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -70,12 +78,14 @@ CREATE TABLE IF NOT EXISTS attendance_logs (
     END
   ) STORED,
   marked_by VARCHAR(20) NOT NULL DEFAULT 'self' CHECK (marked_by IN ('self', 'owner')),
+  auto_checked_out BOOLEAN NOT NULL DEFAULT FALSE,
   notes VARCHAR(255),
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE INDEX IF NOT EXISTS idx_attendance_member_time ON attendance_logs (member_id, check_in_time DESC);
 CREATE INDEX IF NOT EXISTS idx_attendance_open ON attendance_logs (member_id) WHERE check_out_time IS NULL;
+-- The UNIQUE one-open-session-per-member index is created in migrations.js (it first cleans up old duplicates).
 
 CREATE TABLE IF NOT EXISTS fee_invoices (
   id SERIAL PRIMARY KEY,
@@ -88,6 +98,7 @@ CREATE TABLE IF NOT EXISTS fee_invoices (
   status VARCHAR(20) NOT NULL DEFAULT 'pending' CHECK (status IN ('paid', 'partial', 'pending', 'overdue')),
   period_start DATE,
   period_end DATE,
+  pricing_tier VARCHAR(10) CHECK (pricing_tier IN ('first', 'regular')),
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );

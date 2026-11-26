@@ -31,12 +31,28 @@ export async function apiFetch(path, options = {}) {
   }
 
   const data = await res.json().catch(() => ({}));
+
+  // Session expired, account deleted, or deactivated by the owner: sign out instead of
+  // leaving the user on a page where every request fails.
+  const sessionDead = res.status === 401 || (res.status === 403 && data.code === 'ACCOUNT_DEACTIVATED');
+  if (token && sessionDead && !path.startsWith('/auth/login') && !path.startsWith('/auth/onboard-login')) {
+    setToken(null);
+    if (window.location.pathname !== '/login') window.location.assign('/login');
+  }
+
   if (!res.ok) {
     const err = new Error(data.error || `Request failed (${res.status})`);
     err.status = res.status;
     throw err;
   }
   return data;
+}
+
+/** 'YYYY-MM-DD' in the browser's local timezone (toISOString() would give the UTC day). */
+export function localDateKey(date = new Date()) {
+  const d = date instanceof Date ? date : new Date(date);
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
 export function formatCurrency(amount, symbol = '₹') {

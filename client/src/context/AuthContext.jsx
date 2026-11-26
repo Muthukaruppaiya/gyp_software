@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useState, useCallback } from 'react';
 import { apiFetch, getToken, setToken } from '../api/client';
+import { markReminderPending } from '../utils/membership';
 
 const AuthContext = createContext(null);
 
@@ -42,6 +43,8 @@ export function AuthProvider({ children }) {
     setUser(data.user);
     setProfile(data.profile || null);
     setGym(data.gym || null);
+    // Members get a one-time renewal reminder check right after signing in.
+    if (data.user?.role === 'customer') markReminderPending();
     return { user: data.user, profile: data.profile };
   }
 

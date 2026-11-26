@@ -142,7 +142,8 @@ router.post('/check-in', async (req, res) => {
 
     // Verify member exists and is active
     const memRes = await query(
-      `SELECT u.id, u.full_name, u.is_active, mp.membership_status
+      `SELECT u.id, u.full_name, u.is_active, mp.membership_status,
+              (mp.plan_end_date IS NOT NULL AND mp.plan_end_date < CURRENT_DATE) AS plan_lapsed
        FROM users u
        LEFT JOIN member_profiles mp ON mp.user_id = u.id
        WHERE u.id = $1 AND u.role = 'customer'`,
@@ -151,8 +152,20 @@ router.post('/check-in', async (req, res) => {
     if (memRes.rowCount === 0) {
       return res.status(404).json({ error: 'Member not found' });
     }
-    if (!memRes.rows[0].is_active) {
+    const member = memRes.rows[0];
+    if (!member.is_active) {
       return res.status(400).json({ error: 'Member account is inactive' });
+    }
+
+    // Self check-in requires a valid membership. The owner can still check someone in at the
+    // front desk (e.g. renewing on the spot), so desk check-ins are allowed but flagged.
+    const membershipBlocked =
+      member.membership_status === 'frozen' || member.membership_status === 'expired' || member.plan_lapsed;
+    if (membershipBlocked && req.user.role === 'customer') {
+      const reason = member.membership_status === 'frozen' ? 'is frozen' : 'has expired';
+      return res.status(403).json({
+        error: `Your membership ${reason}. Please renew at the front desk to check in.`,
+      });
     }
 
     // Check for existing open session
@@ -175,10 +188,17 @@ router.post('/check-in', async (req, res) => {
     );
 
     res.status(201).json({
-      message: 'Checked in successfully',
+      message: membershipBlocked
+        ? `Checked in — note: ${member.full_name}'s membership is not active`
+        : 'Checked in successfully',
+      membershipWarning: membershipBlocked || undefined,
       log: rows[0],
     });
   } catch (err) {
+    // uniq_attendance_one_open: a concurrent request (double tap) already opened a session.
+    if (err.code === '23505') {
+      return res.status(409).json({ error: 'Already checked in' });
+    }
     console.error('Check-in error:', err);
     res.status(500).json({ error: 'Failed to record check-in' });
   }
@@ -216,10 +236,14 @@ router.post('/check-out', async (req, res) => {
       `UPDATE attendance_logs
        SET check_out_time = NOW(),
            notes = COALESCE($1, notes)
-       WHERE id = $2
+       WHERE id = $2 AND check_out_time IS NULL
        RETURNING *`,
       [notes ? String(notes).slice(0, 250) : null, logId]
     );
+    if (rows.length === 0) {
+      // Closed by a concurrent request (double tap) or the midnight auto-checkout in between.
+      return res.status(409).json({ error: 'This session was already checked out' });
+    }
 
     res.json({
       message: 'Checked out successfully',

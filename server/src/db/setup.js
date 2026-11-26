@@ -5,6 +5,7 @@ import pg from 'pg';
 import bcrypt from 'bcryptjs';
 import dotenv from 'dotenv';
 import { applyTestAvatars } from './testAvatars.js';
+import { runMigrations } from './migrations.js';
 
 dotenv.config();
 
@@ -74,18 +75,19 @@ async function seedDatabase(client) {
 
   // 3. Membership Plans
   const plansData = [
-    ['Monthly Standard', 30, 1500, 'Full gym floor & cardio access for 30 days'],
-    ['Quarterly Pro', 90, 4000, 'Full gym access + 2 trainer check-ins per month'],
-    ['Half-Yearly Elite', 180, 7500, 'All access + body composition tracking & locker'],
-    ['Annual Transformation', 365, 13500, 'Unlimited access + personalized workout & diet plan'],
+    // [name, days, regular price, description, first-month (joining) price or null]
+    ['Monthly Standard', 30, 1500, 'Full gym floor & cardio access for 30 days', 2000],
+    ['Quarterly Pro', 90, 4000, 'Full gym access + 2 trainer check-ins per month', null],
+    ['Half-Yearly Elite', 180, 7500, 'All access + body composition tracking & locker', null],
+    ['Annual Transformation', 365, 13500, 'Unlimited access + personalized workout & diet plan', null],
   ];
 
   const planIds = [];
-  for (const [name, days, price, desc] of plansData) {
+  for (const [name, days, price, desc, firstMonthPrice] of plansData) {
     const res = await client.query(
-      `INSERT INTO membership_plans (name, duration_days, price, description)
-       VALUES ($1, $2, $3, $4) RETURNING id, duration_days, price, name`,
-      [name, days, price, desc]
+      `INSERT INTO membership_plans (name, duration_days, price, description, first_month_price)
+       VALUES ($1, $2, $3, $4, $5) RETURNING id, duration_days, price, name`,
+      [name, days, price, desc, firstMonthPrice]
     );
     planIds.push(res.rows[0]);
   }
@@ -394,13 +396,7 @@ async function seedDatabase(client) {
 }
 
 async function applyMigrations(client) {
-  await client.query(`
-    ALTER TABLE users ALTER COLUMN email DROP NOT NULL;
-    ALTER TABLE member_profiles ADD COLUMN IF NOT EXISTS onboarding_code VARCHAR(20) UNIQUE;
-    ALTER TABLE member_profiles ADD COLUMN IF NOT EXISTS onboarding_completed BOOLEAN NOT NULL DEFAULT TRUE;
-    ALTER TABLE member_profiles ADD COLUMN IF NOT EXISTS profile_image TEXT;
-    ALTER TABLE attendance_logs ADD COLUMN IF NOT EXISTS auto_checked_out BOOLEAN NOT NULL DEFAULT FALSE;
-  `);
+  await runMigrations((sql, params) => client.query(sql, params));
 }
 
 async function runSetup() {

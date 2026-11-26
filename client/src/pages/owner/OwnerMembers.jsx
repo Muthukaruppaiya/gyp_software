@@ -444,10 +444,33 @@ export default function OwnerMembers() {
                 <option value="">Assign later</option>
                 {plans.map((p) => (
                   <option key={p.id} value={p.id}>
-                    {p.name} — {formatCurrency(p.price, currency)} ({p.duration_days}d)
+                    {p.name} —{' '}
+                    {p.first_month_price != null
+                      ? `${formatCurrency(p.first_month_price, currency)} first month, then ${formatCurrency(p.price, currency)}`
+                      : formatCurrency(p.price, currency)}{' '}
+                    ({p.duration_days}d)
                   </option>
                 ))}
               </select>
+              {(() => {
+                const selected = plans.find((p) => String(p.id) === String(form.plan_id));
+                if (!selected) return null;
+                const hasFirst = selected.first_month_price != null;
+                return (
+                  <p className="mt-1.5 text-[11px] text-white/55">
+                    Joining fee due created:{' '}
+                    <span className="font-bold text-[#FF9A5A]">
+                      {formatCurrency(hasFirst ? selected.first_month_price : selected.price, currency)}
+                    </span>
+                    {hasFirst && (
+                      <>
+                        {' '}
+                        (first-month price). Renewals: {formatCurrency(selected.price, currency)} / {selected.duration_days} days.
+                      </>
+                    )}
+                  </p>
+                );
+              })()}
             </div>
             <div className="flex justify-end gap-2 pt-2">
               <button

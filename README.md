@@ -44,7 +44,10 @@ Gym-project/
    DB_NAME=gym_management
    DB_USER=postgres
    DB_PASSWORD=postgres
+   JWT_SECRET=<long random string>   # required when NODE_ENV=production
+   GYM_TIMEZONE=Asia/Kolkata         # decides "today", midnight auto check-out, due/expiry dates
    ```
+   See `server/.env.example` for all options.
 
 2. **Install Dependencies** (already installed if setup ran):
    ```bash

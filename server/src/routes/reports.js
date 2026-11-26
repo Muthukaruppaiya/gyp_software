@@ -1,6 +1,7 @@
 import express from 'express';
 import { query } from '../db/pool.js';
 import { authenticate, requireRole } from '../middleware/auth.js';
+import { gymToday } from '../config.js';
 
 const router = express.Router();
 
@@ -92,8 +93,8 @@ router.get('/overview', async (req, res) => {
 // GET /api/reports/attendance
 router.get('/attendance', async (req, res) => {
   try {
-    const from = req.query.from || new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
-    const to = req.query.to || new Date().toISOString().slice(0, 10);
+    const from = req.query.from || gymToday(-30);
+    const to = req.query.to || gymToday();
 
     const [summaryRes, dailyRes, peakHoursRes, topMembersRes] = await Promise.all([
       query(
@@ -155,8 +156,8 @@ router.get('/attendance', async (req, res) => {
 // GET /api/reports/revenue
 router.get('/revenue', async (req, res) => {
   try {
-    const from = req.query.from || new Date(Date.now() - 90 * 86400000).toISOString().slice(0, 10);
-    const to = req.query.to || new Date().toISOString().slice(0, 10);
+    const from = req.query.from || gymToday(-90);
+    const to = req.query.to || gymToday();
 
     const [totalsRes, byMethodRes, byMonthRes, outstandingRes] = await Promise.all([
       query(

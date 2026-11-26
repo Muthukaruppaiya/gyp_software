@@ -1,6 +1,9 @@
 import express from 'express';
 import { pool, query } from '../db/pool.js';
 import { authenticate, requireRole } from '../middleware/auth.js';
+import { generateReceiptNumber, PAYMENT_METHODS, toPaise } from '../utils/codes.js';
+import { gymToday } from '../config.js';
+import { quotePlanForMember } from '../utils/pricing.js';
 
 const router = express.Router();
 
@@ -55,22 +58,42 @@ router.get('/invoices', async (req, res) => {
 router.post('/invoices', requireRole('owner'), async (req, res) => {
   try {
     const { member_id, plan_id, title, amount_due, due_date, period_start, period_end } = req.body;
-    if (!member_id || !title || amount_due === undefined || !due_date) {
+    if (!member_id || !title || !String(title).trim() || amount_due === undefined || amount_due === '' || !due_date) {
       return res.status(400).json({ error: 'Member, title, amount_due, and due_date are required' });
+    }
+    const amount = Number(amount_due);
+    if (!Number.isFinite(amount) || amount < 0) {
+      return res.status(400).json({ error: 'Amount due must be a valid non-negative number' });
+    }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(String(due_date))) {
+      return res.status(400).json({ error: 'Due date must be a valid date (YYYY-MM-DD)' });
+    }
+    const memberCheck = await query("SELECT 1 FROM users WHERE id = $1 AND role = 'customer'", [Number(member_id)]);
+    if (memberCheck.rowCount === 0) {
+      return res.status(404).json({ error: 'Member not found' });
+    }
+
+    // Record whether this plan bill is the member's joining (first-month) bill or a renewal.
+    let pricingTier = null;
+    if (plan_id) {
+      const planRes = await query('SELECT * FROM membership_plans WHERE id = $1', [Number(plan_id)]);
+      if (planRes.rowCount === 0) return res.status(404).json({ error: 'Membership plan not found' });
+      pricingTier = (await quotePlanForMember({ query }, planRes.rows[0], Number(member_id))).tier;
     }
 
     const { rows } = await query(
-      `INSERT INTO fee_invoices (member_id, plan_id, title, amount_due, amount_paid, due_date, status, period_start, period_end)
-       VALUES ($1, $2, $3, $4, 0, $5, CASE WHEN $5::date < CURRENT_DATE THEN 'overdue' ELSE 'pending' END, $6, $7)
+      `INSERT INTO fee_invoices (member_id, plan_id, title, amount_due, amount_paid, due_date, status, period_start, period_end, pricing_tier)
+       VALUES ($1, $2, $3, $4, 0, $5, CASE WHEN $5::date < CURRENT_DATE THEN 'overdue' ELSE 'pending' END, $6, $7, $8)
        RETURNING *`,
       [
         Number(member_id),
         plan_id ? Number(plan_id) : null,
-        title.trim(),
-        Number(amount_due),
+        String(title).trim(),
+        amount,
         due_date,
         period_start || null,
         period_end || null,
+        pricingTier,
       ]
     );
 
@@ -125,16 +148,29 @@ router.get('/payments', async (req, res) => {
 
 // POST /api/fees/payments (Owner records payment)
 router.post('/payments', requireRole('owner'), async (req, res) => {
+  const { invoice_id, member_id, amount, payment_method, reference_note, extend_membership } = req.body;
+  const payAmount = Number(amount);
+
+  if (!member_id || !Number.isFinite(payAmount) || payAmount <= 0 || !payment_method) {
+    return res.status(400).json({ error: 'Member, valid positive amount, and payment method are required' });
+  }
+  if (!PAYMENT_METHODS.includes(payment_method)) {
+    return res.status(400).json({ error: `Payment method must be one of: ${PAYMENT_METHODS.join(', ')}` });
+  }
+
   const client = await pool.connect();
+  let inTransaction = false;
   try {
-    const { invoice_id, member_id, amount, payment_method, reference_note, extend_membership } = req.body;
-    const payAmount = Number(amount);
-
-    if (!member_id || !payAmount || payAmount <= 0 || !payment_method) {
-      return res.status(400).json({ error: 'Member, valid positive amount, and payment method are required' });
-    }
-
     await client.query('BEGIN');
+    inTransaction = true;
+
+    const memberCheck = await client.query("SELECT 1 FROM users WHERE id = $1 AND role = 'customer'", [
+      Number(member_id),
+    ]);
+    if (memberCheck.rowCount === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Member not found' });
+    }
 
     let targetInvoiceId = invoice_id ? Number(invoice_id) : null;
     if (targetInvoiceId) {
@@ -144,8 +180,31 @@ router.post('/payments', requireRole('owner'), async (req, res) => {
         return res.status(404).json({ error: 'Invoice not found' });
       }
       const inv = invRes.rows[0];
-      const newPaid = Number(inv.amount_paid) + payAmount;
-      const newStatus = newPaid >= Number(inv.amount_due) ? 'paid' : 'partial';
+      if (Number(inv.member_id) !== Number(member_id)) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: 'This invoice belongs to a different member' });
+      }
+
+      const balancePaise = toPaise(inv.amount_due) - toPaise(inv.amount_paid);
+      if (balancePaise <= 0) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: 'This invoice is already fully paid' });
+      }
+      if (toPaise(payAmount) > balancePaise) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({
+          error: `Amount exceeds the balance due (${(balancePaise / 100).toFixed(2)}) on this invoice`,
+        });
+      }
+
+      const newPaid = (toPaise(inv.amount_paid) + toPaise(payAmount)) / 100;
+      const fullyPaid = toPaise(newPaid) >= toPaise(inv.amount_due);
+      // A partial payment on a past-due invoice keeps it "overdue" rather than hiding it as "partial".
+      const { rows: [{ is_past_due: isPastDue }] } = await client.query(
+        'SELECT $1::date < CURRENT_DATE AS is_past_due',
+        [inv.due_date]
+      );
+      const newStatus = fullyPaid ? 'paid' : isPastDue ? 'overdue' : 'partial';
 
       await client.query(
         `UPDATE fee_invoices
@@ -173,7 +232,7 @@ router.post('/payments', requireRole('owner'), async (req, res) => {
       }
     }
 
-    const receiptNumber = `RCP-${Date.now().toString().slice(-6)}-${Math.floor(10 + Math.random() * 89)}`;
+    const receiptNumber = generateReceiptNumber(gymToday());
     const payRes = await client.query(
       `INSERT INTO payments (
          invoice_id, member_id, amount, payment_method, receipt_number, reference_note, recorded_by
@@ -183,9 +242,10 @@ router.post('/payments', requireRole('owner'), async (req, res) => {
     );
 
     await client.query('COMMIT');
+    inTransaction = false;
     res.status(201).json({ message: 'Payment recorded successfully', payment: payRes.rows[0] });
   } catch (err) {
-    await client.query('ROLLBACK');
+    if (inTransaction) await client.query('ROLLBACK').catch(() => {});
     console.error('Record payment error:', err);
     res.status(500).json({ error: 'Failed to record payment' });
   } finally {

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
-import { Plus, IndianRupee } from 'lucide-react';
-import { apiFetch, formatCurrency, formatDate } from '../../api/client';
+import { Link } from 'react-router-dom';
+import { Plus, IndianRupee, Settings, Tag, Repeat } from 'lucide-react';
+import { apiFetch, formatCurrency, formatDate, localDateKey } from '../../api/client';
 import { useAuth } from '../../context/AuthContext';
 import { useTransactionPopup } from '../../context/TransactionPopupContext';
 import StatusBadge from '../../components/StatusBadge';
@@ -25,8 +26,10 @@ export default function OwnerFees() {
   const [payForm, setPayForm] = useState({ amount: '', payment_method: 'UPI', reference_note: '', extend_membership: true });
   const [invoiceModal, setInvoiceModal] = useState(false);
   const [invForm, setInvForm] = useState({ member_id: '', plan_id: '', title: '', amount_due: '', due_date: '' });
-  const [planModal, setPlanModal] = useState(false);
-  const [planForm, setPlanForm] = useState({ name: '', duration_days: 30, price: '', description: '' });
+  // Which price tier the server says applies to the selected member + plan.
+  const [quote, setQuote] = useState(null);
+
+  const activePlans = plans.filter((p) => p.is_active);
 
   async function loadAll() {
     setLoading(true);
@@ -117,22 +120,19 @@ export default function OwnerFees() {
     }
   }
 
-  async function submitPlan(e) {
-    e.preventDefault();
+  // Ask the server which price applies (first-month for a member's first plan bill, regular after).
+  async function applyPlanQuote(nextForm) {
+    setInvForm(nextForm);
+    setQuote(null);
+    if (!nextForm.plan_id) return;
     try {
-      await apiFetch('/plans', {
-        method: 'POST',
-        body: JSON.stringify(planForm),
-      });
-      const createdName = planForm.name;
-      const createdPrice = planForm.price;
-      setPlanModal(false);
-      setPlanForm({ name: '', duration_days: 30, price: '', description: '' });
-      showSuccess({
-        title: 'Membership Plan Created Successfully!',
-        message: `${createdName} (${formatCurrency(createdPrice, currency)}) is now available.`,
-      });
-      loadAll();
+      const q = await apiFetch(`/plans/${nextForm.plan_id}/quote?memberId=${nextForm.member_id || ''}`);
+      setQuote(q);
+      setInvForm((f) =>
+        f.plan_id === nextForm.plan_id && f.member_id === nextForm.member_id
+          ? { ...f, amount_due: String(q.amount), title: q.title }
+          : f
+      );
     } catch (err) {
       setError(err.message);
     }
@@ -150,24 +150,27 @@ export default function OwnerFees() {
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
-          <button
-            onClick={() => setPlanModal(true)}
+          <Link
+            to="/owner/profile?tab=pricing"
             className="inline-flex items-center gap-1.5 rounded-full border border-white/12 bg-white/8 px-4 py-2.5 text-xs font-bold text-white hover:bg-white/15"
           >
-            <Plus className="h-3.5 w-3.5 text-[#E56717]" />
-            New Plan
-          </button>
+            <Settings className="h-3.5 w-3.5 text-[#E56717]" />
+            Manage Pricing
+          </Link>
           <button
             onClick={() => {
-              const today = new Date().toISOString().slice(0, 10);
-              setInvForm({
-                member_id: members[0]?.id ? String(members[0].id) : '',
-                plan_id: plans[0]?.id ? String(plans[0].id) : '',
-                title: plans[0] ? `${plans[0].name} Renewal` : 'Monthly Membership Fee',
-                amount_due: plans[0] ? String(plans[0].price) : '1500',
+              const today = localDateKey();
+              const firstMember = members[0];
+              // Default to the member's current plan when they have one.
+              const defaultPlan = activePlans.find((p) => p.id === firstMember?.plan_id) || activePlans[0];
+              setInvoiceModal(true);
+              applyPlanQuote({
+                member_id: firstMember?.id ? String(firstMember.id) : '',
+                plan_id: defaultPlan ? String(defaultPlan.id) : '',
+                title: defaultPlan ? `${defaultPlan.name} Membership` : 'Monthly Membership Fee',
+                amount_due: defaultPlan ? String(defaultPlan.price) : '',
                 due_date: today,
               });
-              setInvoiceModal(true);
             }}
             className="inline-flex items-center gap-1.5 rounded-full btn-papaya px-4 py-2.5 text-xs font-bold text-white hover:brightness-110 shadow-md"
           >
@@ -338,29 +341,40 @@ export default function OwnerFees() {
           ))}
         </div>
       ) : (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-          {plans.map((pl, idx) => (
-            <div
-              key={pl.id}
-              className={`${idx === 3 ? 'glass-dark' : 'glass-card'} p-5 flex flex-col justify-between`}
-            >
-              <div>
-                <div className="flex items-center justify-between">
-                  <h3 className={`text-base font-extrabold ${idx === 3 ? 'text-white' : 'text-white'}`}>{pl.name}</h3>
-                  <StatusBadge status={pl.is_active ? 'active' : 'expired'} label={pl.is_active ? 'Active' : 'Off'} />
+        <div className="space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-xs text-white/60">
+            <span>Plan prices are set by the owner in Settings. First-month price applies to a member's joining bill only.</span>
+            <Link to="/owner/profile?tab=pricing" className="font-bold text-[#FF8F4A] hover:underline">
+              Edit pricing →
+            </Link>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+            {plans.map((pl) => {
+              const hasFirst = pl.first_month_price !== null && pl.first_month_price !== undefined;
+              return (
+                <div key={pl.id} className={`glass-card p-5 flex flex-col gap-3 ${pl.is_active ? '' : 'opacity-60'}`}>
+                  <div className="flex items-center justify-between gap-2">
+                    <h3 className="text-base font-extrabold text-white">{pl.name}</h3>
+                    <StatusBadge status={pl.is_active ? 'active' : 'expired'} label={pl.is_active ? 'Active' : 'Off'} />
+                  </div>
+                  {hasFirst && (
+                    <p className="flex items-center justify-between text-xs text-[#FFB98A]">
+                      <span className="flex items-center gap-1"><Tag className="h-3.5 w-3.5" /> First month</span>
+                      <span className="text-base font-extrabold text-[#FF9A5A]">{formatCurrency(pl.first_month_price, currency)}</span>
+                    </p>
+                  )}
+                  <p className="flex items-center justify-between text-xs text-white/60">
+                    <span className="flex items-center gap-1"><Repeat className="h-3.5 w-3.5" /> {hasFirst ? 'Then regular' : 'Price'}</span>
+                    <span className="text-xl font-extrabold text-[#E56717]">
+                      {formatCurrency(pl.price, currency)}
+                      <span className="text-xs font-normal text-white/55"> / {pl.duration_days} days</span>
+                    </span>
+                  </p>
+                  {pl.description && <p className="text-xs leading-relaxed text-white/60">{pl.description}</p>}
                 </div>
-                <p className="mt-3 text-2xl font-extrabold text-[#E56717]">
-                  {formatCurrency(pl.price, currency)}
-                  <span className={`text-xs font-normal ${idx === 3 ? 'text-white/60' : 'text-white/55'}`}>
-                    {' '}/ {pl.duration_days} days
-                  </span>
-                </p>
-                <p className={`mt-2 text-xs leading-relaxed ${idx === 3 ? 'text-white/75' : 'text-white/60'}`}>
-                  {pl.description}
-                </p>
-              </div>
-            </div>
-          ))}
+              );
+            })}
+          </div>
         </div>
       )}
 
@@ -442,7 +456,7 @@ export default function OwnerFees() {
             <select
               required
               value={invForm.member_id}
-              onChange={(e) => setInvForm({ ...invForm, member_id: e.target.value })}
+              onChange={(e) => applyPlanQuote({ ...invForm, member_id: e.target.value })}
               className="input-glass w-full px-3.5 py-2.5 text-sm"
             >
               {members.map((m) => (
@@ -456,24 +470,30 @@ export default function OwnerFees() {
             <label className="block text-xs font-bold text-white/80 mb-1">Plan (Optional)</label>
             <select
               value={invForm.plan_id}
-              onChange={(e) => {
-                const p = plans.find((x) => String(x.id) === e.target.value);
-                setInvForm({
-                  ...invForm,
-                  plan_id: e.target.value,
-                  title: p ? `${p.name} Membership` : invForm.title,
-                  amount_due: p ? String(p.price) : invForm.amount_due,
-                });
-              }}
+              onChange={(e) => applyPlanQuote({ ...invForm, plan_id: e.target.value })}
               className="input-glass w-full px-3.5 py-2.5 text-sm"
             >
               <option value="">Custom Fee</option>
-              {plans.map((p) => (
+              {activePlans.map((p) => (
                 <option key={p.id} value={p.id}>
-                  {p.name} ({formatCurrency(p.price, currency)})
+                  {p.name} ({formatCurrency(p.price, currency)}
+                  {p.first_month_price != null ? `, first month ${formatCurrency(p.first_month_price, currency)}` : ''})
                 </option>
               ))}
             </select>
+            {invForm.plan_id && quote && (
+              <p
+                className={`mt-1.5 rounded-xl px-3 py-2 text-[11px] font-semibold ${
+                  quote.tier === 'first'
+                    ? 'bg-[#E56717]/12 text-[#FFB98A] border border-[#E56717]/30'
+                    : 'bg-white/6 text-white/65 border border-white/10'
+                }`}
+              >
+                {quote.tier === 'first'
+                  ? `First-month (joining) price applied — this is the member's first plan bill. Renewals will be ${formatCurrency(quote.regular_price, currency)}.`
+                  : 'Regular (renewal) price applied.'}
+              </p>
+            )}
           </div>
           <div>
             <label className="block text-xs font-bold text-white/80 mb-1">Fee Title</label>
@@ -517,61 +537,6 @@ export default function OwnerFees() {
         </form>
       </Modal>
 
-      {/* New Plan Modal */}
-      <Modal open={planModal} onClose={() => setPlanModal(false)} title="Create Membership Plan">
-        <form onSubmit={submitPlan} className="space-y-4">
-          <div>
-            <label className="block text-xs font-bold text-white/80 mb-1">Plan Name</label>
-            <input
-              type="text"
-              required
-              value={planForm.name}
-              onChange={(e) => setPlanForm({ ...planForm, name: e.target.value })}
-              placeholder="e.g. Personal Training 30 Days"
-              className="input-glass w-full px-3.5 py-2.5 text-sm"
-            />
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="block text-xs font-bold text-white/80 mb-1">Duration (Days)</label>
-              <input
-                type="number"
-                required
-                min="1"
-                value={planForm.duration_days}
-                onChange={(e) => setPlanForm({ ...planForm, duration_days: e.target.value })}
-                className="input-glass w-full px-3.5 py-2.5 text-sm"
-              />
-            </div>
-            <div>
-              <label className="block text-xs font-bold text-white/80 mb-1">Price ({currency})</label>
-              <input
-                type="number"
-                required
-                min="0"
-                value={planForm.price}
-                onChange={(e) => setPlanForm({ ...planForm, price: e.target.value })}
-                className="input-glass w-full px-3.5 py-2.5 text-sm"
-              />
-            </div>
-          </div>
-          <div>
-            <label className="block text-xs font-bold text-white/80 mb-1">Description</label>
-            <textarea
-              rows={3}
-              value={planForm.description}
-              onChange={(e) => setPlanForm({ ...planForm, description: e.target.value })}
-              className="input-glass w-full px-3.5 py-2.5 text-sm"
-            />
-          </div>
-          <button
-            type="submit"
-            className="w-full rounded-full btn-papaya py-3 text-sm font-bold text-white hover:brightness-110 transition-colors"
-          >
-            Save Plan
-          </button>
-        </form>
-      </Modal>
     </div>
   );
 }

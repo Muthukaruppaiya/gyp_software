@@ -6,9 +6,10 @@ import { useAuth } from '../../context/AuthContext';
 import { useTransactionPopup } from '../../context/TransactionPopupContext';
 import StatCard from '../../components/StatCard';
 import StatusBadge from '../../components/StatusBadge';
+import MembershipCountdown from '../../components/MembershipCountdown';
 
 export default function CustomerDashboard() {
-  const { user, profile, gym } = useAuth();
+  const { user, profile, gym, refreshSession } = useAuth();
   const { showSuccess } = useTransactionPopup();
   const currency = gym?.currency_symbol || '₹';
 
@@ -39,6 +40,8 @@ export default function CustomerDashboard() {
 
   useEffect(() => {
     loadDashboard();
+    // Pick up renewals the owner recorded since sign-in, so the countdown is current.
+    refreshSession();
   }, []);
 
   useEffect(() => {
@@ -197,6 +200,8 @@ export default function CustomerDashboard() {
           </div>
         </div>
       )}
+
+      <MembershipCountdown profile={profile} />
 
       {/* Dark Liquid Glass Check-In / Live Timer Panel (Screen 3 Style) */}
       <div className="relative overflow-hidden glass-dark p-6 sm:p-7">

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Download, Clock, Users, IndianRupee, BarChart3 } from 'lucide-react';
-import { apiFetch, formatCurrency, formatDate, formatDuration, getToken } from '../../api/client';
+import { apiFetch, formatCurrency, formatDate, formatDuration, getToken, localDateKey } from '../../api/client';
 import { useAuth } from '../../context/AuthContext';
 import StatCard from '../../components/StatCard';
 import StatusBadge from '../../components/StatusBadge';
@@ -10,8 +10,8 @@ export default function OwnerReports() {
   const { gym } = useAuth();
   const currency = gym?.currency_symbol || '₹';
 
-  const todayStr = new Date().toISOString().slice(0, 10);
-  const thirtyAgo = new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
+  const todayStr = localDateKey();
+  const thirtyAgo = localDateKey(new Date(Date.now() - 30 * 86400000));
 
   const [fromDate, setFromDate] = useState(thirtyAgo);
   const [toDate, setToDate] = useState(todayStr);

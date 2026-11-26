@@ -2,6 +2,7 @@ import express from 'express';
 import bcrypt from 'bcryptjs';
 import { query } from '../db/pool.js';
 import { authenticate, requireRole } from '../middleware/auth.js';
+import { phoneKey, PHONE_KEY_SQL } from '../utils/codes.js';
 
 const router = express.Router();
 
@@ -60,6 +61,32 @@ router.put('/', authenticate, async (req, res) => {
       return res.status(400).json({ error: 'Full name is required' });
     }
 
+    // Uploaded photos arrive as data URLs; demo/test avatars are site-relative paths.
+    if (
+      profile_image &&
+      !/^data:image\/(png|jpe?g|webp|gif);base64,/i.test(String(profile_image)) &&
+      !/^\/images\/[\w\-/.]+\.(svg|png|jpe?g|webp)$/i.test(String(profile_image))
+    ) {
+      return res.status(400).json({ error: 'Profile photo must be a PNG, JPEG, WebP or GIF image' });
+    }
+
+    if (email && email.trim() && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
+      return res.status(400).json({ error: 'Please enter a valid email address' });
+    }
+
+    // Phone is a login identifier, so it must stay unique (login matches by the last 10 digits).
+    if (phone && String(phone).trim()) {
+      const digits = phoneKey(phone);
+      if (!digits) return res.status(400).json({ error: 'Please enter a valid phone number' });
+      const dupPhone = await query(
+        `SELECT 1 FROM users WHERE ${PHONE_KEY_SQL('phone')} = $1 AND id <> $2`,
+        [digits, req.user.id]
+      );
+      if (dupPhone.rowCount > 0) {
+        return res.status(409).json({ error: 'This phone number is already in use by another account' });
+      }
+    }
+
     if (email && email.trim()) {
       const dup = await query(
         'SELECT id FROM users WHERE LOWER(email) = LOWER($1) AND id <> $2',
@@ -111,40 +138,48 @@ router.put('/', authenticate, async (req, res) => {
 
     let profile = null;
     if (req.user.role === 'customer') {
+      // Only fields present in the request are written. Previously any field the client omitted
+      // was overwritten with NULL, so a partial update (e.g. a future mobile app) wiped data.
+      const text = (v) => (v === null || String(v).trim() === '' ? null : String(v).trim());
+      const num = (v) => (v === null || v === '' || !Number.isFinite(Number(v)) ? null : Number(v));
+      const date = (v) => (v && /^\d{4}-\d{2}-\d{2}/.test(String(v)) ? String(v).slice(0, 10) : null);
+      const fields = {
+        date_of_birth: [date_of_birth, date],
+        gender: [gender, text],
+        address: [address, text],
+        emergency_contact_name: [emergency_contact_name, text],
+        emergency_contact_phone: [emergency_contact_phone, text],
+        height_cm: [height_cm, num],
+        weight_kg: [weight_kg, num],
+        fitness_goal: [fitness_goal, text],
+        // '' removes the photo; null/absent keeps it.
+        profile_image: [profile_image === null ? undefined : profile_image, (v) => v || null],
+      };
+
+      const sets = [];
+      const params = [];
+      for (const [column, [value, normalise]] of Object.entries(fields)) {
+        if (value === undefined) continue;
+        params.push(normalise(value));
+        sets.push(`${column} = $${params.length}`);
+      }
+      params.push(req.user.id);
+
       const profRes = await query(
         `UPDATE member_profiles
-         SET date_of_birth = $1,
-             gender = $2,
-             address = $3,
-             emergency_contact_name = $4,
-             emergency_contact_phone = $5,
-             height_cm = $6,
-             weight_kg = $7,
-             fitness_goal = $8,
-             profile_image = CASE WHEN $9::text IS NOT NULL THEN $9::text ELSE profile_image END,
+         SET ${sets.join(', ')}${sets.length ? ',' : ''}
              onboarding_completed = TRUE,
              updated_at = NOW()
-         WHERE user_id = $10
+         WHERE user_id = $${params.length}
          RETURNING *`,
-        [
-          date_of_birth || null,
-          gender || null,
-          address || null,
-          emergency_contact_name || null,
-          emergency_contact_phone || null,
-          height_cm ? Number(height_cm) : null,
-          weight_kg ? Number(weight_kg) : null,
-          fitness_goal || null,
-          profile_image !== undefined ? profile_image : null,
-          req.user.id,
-        ]
+        params
       );
       profile = profRes.rows[0] || null;
     }
 
     res.json({
       message: isCompletingOnboarding
-        ? 'Onboarding profile completed! Welcome to IronPulse Gym.'
+        ? 'Onboarding profile completed! Welcome to the gym.'
         : 'Profile updated successfully',
       onboardingCompletedNow: isCompletingOnboarding,
       user: userRes.rows[0],
@@ -156,47 +191,83 @@ router.put('/', authenticate, async (req, res) => {
   }
 });
 
-// PUT /api/profile/gym - Owner updates gym profile/settings
+// Gym profile fields the owner can edit, with per-field limits.
+const GYM_TEXT_FIELDS = {
+  tagline: 255,
+  phone: 30,
+  email: 255,
+  address: 1000,
+  opening_hours: 120,
+  currency_symbol: 10,
+  whatsapp: 30,
+  website: 255,
+  instagram: 120,
+  upi_id: 100,
+  gstin: 20,
+};
+
+// PUT /api/profile/gym - Owner updates gym profile/settings (only the fields sent are changed)
 router.put('/gym', authenticate, requireRole('owner'), async (req, res) => {
   try {
-    const { gym_name, tagline, phone, email, address, opening_hours, currency_symbol } = req.body;
-    if (!gym_name || !gym_name.trim()) {
+    const body = req.body || {};
+    const values = {};
+
+    if (!('gym_name' in body) || !String(body.gym_name || '').trim()) {
       return res.status(400).json({ error: 'Gym name is required' });
     }
+    values.gym_name = String(body.gym_name).trim().slice(0, 150);
+
+    for (const [field, max] of Object.entries(GYM_TEXT_FIELDS)) {
+      if (!(field in body)) continue;
+      const v = String(body[field] ?? '').trim();
+      if (v.length > max) {
+        return res.status(400).json({ error: `${field.replace(/_/g, ' ')} must be ${max} characters or fewer` });
+      }
+      values[field] = v;
+    }
+    if (values.currency_symbol === '') values.currency_symbol = '₹';
+    if (values.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(values.email)) {
+      return res.status(400).json({ error: 'Please enter a valid gym email address' });
+    }
+    if (values.upi_id && !/^[\w.\-]{2,}@[a-zA-Z][\w.\-]*$/.test(values.upi_id)) {
+      return res.status(400).json({ error: 'UPI ID should look like name@bank (e.g. ironpulse@okhdfcbank)' });
+    }
+    if (values.gstin && !/^[0-9]{2}[A-Z0-9]{13}$/i.test(values.gstin)) {
+      return res.status(400).json({ error: 'GSTIN must be 15 characters (e.g. 29ABCDE1234F1Z5)' });
+    }
+    if (values.gstin) values.gstin = values.gstin.toUpperCase();
+    if (values.website && !/^https?:\/\//i.test(values.website)) values.website = `https://${values.website}`;
+    if (values.instagram) values.instagram = values.instagram.replace(/^@/, '');
+
+    if ('logo_image' in body) {
+      const logo = body.logo_image;
+      if (logo && !/^data:image\/(png|jpe?g|webp|gif);base64,/i.test(String(logo))) {
+        return res.status(400).json({ error: 'Logo must be a PNG, JPEG, WebP or GIF image' });
+      }
+      values.logo_image = logo || null;
+    }
+
+    const columns = Object.keys(values);
+    const params = columns.map((c) => values[c]);
 
     const existing = await query('SELECT id FROM gym_settings ORDER BY id ASC LIMIT 1');
     let result;
     if (existing.rowCount === 0) {
+      params.push(req.user.id);
       result = await query(
-        `INSERT INTO gym_settings (owner_user_id, gym_name, tagline, phone, email, address, opening_hours, currency_symbol)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
-        [
-          req.user.id,
-          gym_name.trim(),
-          tagline || '',
-          phone || '',
-          email || '',
-          address || '',
-          opening_hours || '',
-          currency_symbol || '₹',
-        ]
+        `INSERT INTO gym_settings (${columns.join(', ')}, owner_user_id)
+         VALUES (${columns.map((_, i) => `$${i + 1}`).join(', ')}, $${params.length})
+         RETURNING *`,
+        params
       );
     } else {
+      params.push(existing.rows[0].id);
       result = await query(
         `UPDATE gym_settings
-         SET gym_name = $1, tagline = $2, phone = $3, email = $4, address = $5,
-             opening_hours = $6, currency_symbol = $7, updated_at = NOW()
-         WHERE id = $8 RETURNING *`,
-        [
-          gym_name.trim(),
-          tagline || '',
-          phone || '',
-          email || '',
-          address || '',
-          opening_hours || '',
-          currency_symbol || '₹',
-          existing.rows[0].id,
-        ]
+         SET ${columns.map((c, i) => `${c} = $${i + 1}`).join(', ')}, updated_at = NOW()
+         WHERE id = $${params.length}
+         RETURNING *`,
+        params
       );
     }
 

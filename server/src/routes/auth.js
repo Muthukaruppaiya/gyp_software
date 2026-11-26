@@ -3,13 +3,31 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { query } from '../db/pool.js';
 import { authenticate } from '../middleware/auth.js';
+import { rateLimit } from '../middleware/rateLimit.js';
+import { JWT_SECRET } from '../config.js';
+import { phoneKey, PHONE_KEY_SQL } from '../utils/codes.js';
 
 const router = express.Router();
+
+const FIFTEEN_MIN = 15 * 60 * 1000;
+// Per IP + identifier, so one attacker can't lock out everyone behind the same NAT.
+const loginLimiter = rateLimit({
+  windowMs: FIFTEEN_MIN,
+  max: 10,
+  keyFn: (req) => `${req.ip}|${String(req.body?.identifier || req.body?.email || '').trim().toLowerCase()}`,
+  message: 'Too many sign-in attempts. Please wait 15 minutes and try again.',
+});
+// Onboarding codes are the only secret for a not-yet-activated account: limit guesses per IP hard.
+const onboardLimiter = rateLimit({
+  windowMs: FIFTEEN_MIN,
+  max: 8,
+  message: 'Too many onboarding code attempts. Please wait 15 minutes or ask the gym owner for your code.',
+});
 
 function signToken(user) {
   return jwt.sign(
     { id: user.id, email: user.email, role: user.role, full_name: user.full_name },
-    process.env.JWT_SECRET || 'gym-proposal-dev-secret-change-in-prod',
+    JWT_SECRET,
     { expiresIn: '7d' }
   );
 }
@@ -24,7 +42,7 @@ async function getGymSettings() {
 }
 
 // POST /api/auth/login (Email or Phone + Password)
-router.post('/login', async (req, res) => {
+router.post('/login', loginLimiter, async (req, res) => {
   try {
     const rawIdentifier = (req.body.identifier || req.body.email || '').trim();
     const { password } = req.body;
@@ -32,12 +50,16 @@ router.post('/login', async (req, res) => {
       return res.status(400).json({ error: 'Email or phone number and password are required' });
     }
 
-    const digitsOnly = rawIdentifier.replace(/\D/g, '');
+    // Treat the identifier as a phone only if it isn't an email and has enough digits;
+    // otherwise an email like "arjun123@x.com" could match a phone ending in 123.
+    const phoneDigits = rawIdentifier.includes('@') ? '' : phoneKey(rawIdentifier);
+    const digitsOnly = phoneDigits.length >= 7 ? phoneDigits : '';
     const { rows } = await query(
       `SELECT id, email, password_hash, role, full_name, phone, is_active
        FROM users
        WHERE LOWER(COALESCE(email, '')) = LOWER($1)
-          OR ($2 <> '' AND REGEXP_REPLACE(COALESCE(phone, ''), '[^0-9]', '', 'g') = $2)
+          OR ($2 <> '' AND ${PHONE_KEY_SQL('phone')} = $2)
+       ORDER BY (LOWER(COALESCE(email, '')) = LOWER($1)) DESC, is_active DESC, id ASC
        LIMIT 1`,
       [rawIdentifier, digitsOnly]
     );
@@ -89,7 +111,7 @@ router.post('/login', async (req, res) => {
 });
 
 // POST /api/auth/onboard-login (Client first-time login using Owner-generated code)
-router.post('/onboard-login', async (req, res) => {
+router.post('/onboard-login', onboardLimiter, async (req, res) => {
   try {
     const code = (req.body.onboarding_code || '').trim().toUpperCase();
     if (!code) {
