@@ -197,10 +197,58 @@
   }
 }
 
+/* Login: slow hero drift + card rise */
+.login-hero-zoom {
+  animation: hero-zoom 18s ease-in-out infinite alternate;
+}
+.login-rise {
+  animation: rise-in 0.5s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+/* Page content fades up on navigation */
+.page-enter {
+  animation: rise-in 0.35s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+@keyframes hero-zoom {
+  from {
+    transform: scale(1);
+  }
+  to {
+    transform: scale(1.08);
+  }
+}
+
+@keyframes rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Cards lift slightly on hover (pointer devices only) */
+@media (hover: hover) {
+  .glass-card {
+    transition: border-color 0.2s ease, transform 0.2s ease;
+  }
+  a.glass-card:hover,
+  button.glass-card:hover {
+    border-color: rgba(229, 103, 23, 0.45);
+    transform: translateY(-2px);
+  }
+}
+
 /* Respect users who ask for less motion: keep the green colour, drop the blink. */
 @media (prefers-reduced-motion: reduce) {
   .blink-green,
-  .blink-dot {
+  .blink-dot,
+  .login-hero-zoom,
+  .login-rise,
+  .page-enter {
     animation: none;
   }
 }

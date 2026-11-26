@@ -6,6 +6,7 @@ import { authenticate } from '../middleware/auth.js';
 import { rateLimit } from '../middleware/rateLimit.js';
 import { JWT_SECRET } from '../config.js';
 import { phoneKey, PHONE_KEY_SQL } from '../utils/codes.js';
+import { getGym, getPublicGym, publicGym } from '../utils/gym.js';
 
 const router = express.Router();
 
@@ -32,14 +33,7 @@ function signToken(user) {
   );
 }
 
-async function getGymSettings() {
-  const { rows } = await query('SELECT * FROM gym_settings ORDER BY id ASC LIMIT 1');
-  return rows[0] || {
-    gym_name: 'IronPulse Fitness Studio',
-    tagline: 'Strength • Conditioning • Community',
-    currency_symbol: '₹',
-  };
-}
+const SUSPENDED_MSG = 'This gym account is suspended. Please contact support.';
 
 // POST /api/auth/login (Email or Phone + Password)
 router.post('/login', loginLimiter, async (req, res) => {
@@ -55,7 +49,7 @@ router.post('/login', loginLimiter, async (req, res) => {
     const phoneDigits = rawIdentifier.includes('@') ? '' : phoneKey(rawIdentifier);
     const digitsOnly = phoneDigits.length >= 7 ? phoneDigits : '';
     const { rows } = await query(
-      `SELECT id, email, password_hash, role, full_name, phone, is_active
+      `SELECT id, email, password_hash, role, full_name, phone, is_active, gym_id
        FROM users
        WHERE LOWER(COALESCE(email, '')) = LOWER($1)
           OR ($2 <> '' AND ${PHONE_KEY_SQL('phone')} = $2)
@@ -77,8 +71,13 @@ router.post('/login', loginLimiter, async (req, res) => {
       return res.status(401).json({ error: 'Invalid credentials' });
     }
 
+    const gymRow = await getGym({ query }, user.gym_id);
+    if (user.role !== 'superadmin' && gymRow?.status === 'suspended') {
+      return res.status(403).json({ error: SUSPENDED_MSG, code: 'GYM_SUSPENDED' });
+    }
+
     const token = signToken(user);
-    const gym = await getGymSettings();
+    const gym = publicGym(gymRow);
 
     let profile = null;
     if (user.role === 'customer') {
@@ -119,7 +118,7 @@ router.post('/onboard-login', onboardLimiter, async (req, res) => {
     }
 
     const { rows } = await query(
-      `SELECT u.id, u.email, u.role, u.full_name, u.phone, u.is_active,
+      `SELECT u.id, u.email, u.role, u.full_name, u.phone, u.is_active, u.gym_id,
               mp.*, pl.name AS plan_name, pl.price AS plan_price, pl.duration_days AS plan_duration_days
        FROM member_profiles mp
        JOIN users u ON u.id = mp.user_id
@@ -129,7 +128,8 @@ router.post('/onboard-login', onboardLimiter, async (req, res) => {
     );
 
     if (rows.length === 0) {
-      return res.status(404).json({ error: 'Invalid onboarding code. Please check with the gym owner.' });
+      // Not a member code: it may be a gym owner's activation code issued by the super admin.
+      return ownerOnboardLogin(code, res);
     }
 
     const record = rows[0];
@@ -151,8 +151,13 @@ router.post('/onboard-login', onboardLimiter, async (req, res) => {
       phone: record.phone,
     };
 
+    const gymRow = await getGym({ query }, record.gym_id);
+    if (gymRow?.status === 'suspended') {
+      return res.status(403).json({ error: SUSPENDED_MSG, code: 'GYM_SUSPENDED' });
+    }
+
     const token = signToken(user);
-    const gym = await getGymSettings();
+    const gym = publicGym(gymRow);
 
     const profile = {
       id: record.id,
@@ -184,6 +189,44 @@ router.post('/onboard-login', onboardLimiter, async (req, res) => {
   }
 });
 
+async function ownerOnboardLogin(code, res) {
+  const { rows } = await query(
+    `SELECT g.*, u.id AS owner_id, u.email AS owner_email, u.full_name AS owner_name,
+            u.phone AS owner_phone, u.is_active AS owner_active
+     FROM gym_settings g
+     JOIN users u ON u.id = g.owner_user_id
+     WHERE UPPER(g.onboarding_code) = $1`,
+    [code]
+  );
+  const g = rows[0];
+  if (!g) {
+    return res.status(404).json({ error: 'Invalid access code. Please check the code and try again.' });
+  }
+  if (g.status === 'suspended') {
+    return res.status(403).json({ error: SUSPENDED_MSG, code: 'GYM_SUSPENDED' });
+  }
+  if (!g.owner_active) {
+    return res.status(403).json({ error: 'This owner account is deactivated. Please contact support.' });
+  }
+  if (g.owner_onboarded) {
+    return res.status(400).json({
+      error: 'This access code has already been activated. Please sign in with your Email/Phone and Password.',
+    });
+  }
+
+  const user = { id: g.owner_id, email: g.owner_email, role: 'owner', full_name: g.owner_name, phone: g.owner_phone };
+  const { owner_id, owner_email, owner_name, owner_phone, owner_active, ...gymRow } = g; // eslint-disable-line no-unused-vars
+  res.json({
+    message: 'Access code verified. Set up your account to continue.',
+    firstTimeOnboarded: true,
+    ownerOnboarding: true,
+    token: signToken(user),
+    user,
+    profile: null,
+    gym: publicGym(gymRow),
+  });
+}
+
 // GET /api/auth/me
 router.get('/me', authenticate, async (req, res) => {
   try {
@@ -192,6 +235,7 @@ router.get('/me', authenticate, async (req, res) => {
       [req.user.id]
     );
     const user = rows[0];
+    // gym is null for the super admin.
     if (!user) {
       return res.status(404).json({ error: 'User not found' });
     }
@@ -208,7 +252,7 @@ router.get('/me', authenticate, async (req, res) => {
       profile = profRes.rows[0] || null;
     }
 
-    const gym = await getGymSettings();
+    const gym = await getPublicGym({ query }, req.user.gym_id);
     res.json({ user, profile, gym });
   } catch (err) {
     console.error('Auth me error:', err);

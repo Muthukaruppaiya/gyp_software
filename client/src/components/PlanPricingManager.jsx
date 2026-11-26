@@ -131,11 +131,6 @@ export default function PlanPricingManager({ currency = '₹' }) {
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
         <div>
           <h3 className="text-base font-extrabold text-white">Membership Plans & Pricing</h3>
-          <p className="text-xs text-white/55 max-w-xl">
-            Set a <span className="font-bold text-[#FF9A5A]">first-month price</span> for a member's joining bill and a{' '}
-            <span className="font-bold text-white">regular price</span> for every renewal after that. Leave the first-month
-            price off to charge the regular price from day one.
-          </p>
         </div>
         <button
           onClick={openCreate}
@@ -295,9 +290,6 @@ export default function PlanPricingManager({ currency = '₹' }) {
               />
               <span>
                 <span className="font-bold text-white">Charge a different price for the first month</span>
-                <span className="block text-white/55">
-                  e.g. joining month includes admission fee, or an introductory discount
-                </span>
               </span>
             </label>
             {form.use_first_month_price && (

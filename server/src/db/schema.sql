@@ -28,6 +28,9 @@ CREATE TABLE IF NOT EXISTS gym_settings (
   instagram VARCHAR(120),
   upi_id VARCHAR(100),
   gstin VARCHAR(20),
+  latitude NUMERIC(9, 6),
+  longitude NUMERIC(9, 6),
+  geofence_radius_m INTEGER NOT NULL DEFAULT 100,
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 

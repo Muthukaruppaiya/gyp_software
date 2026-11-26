@@ -29,9 +29,6 @@ export default function CustomerFees() {
         <h2 className="text-2xl font-extrabold tracking-tight text-white">
           Membership <span className="font-normal italic text-white/60">& Fees</span>
         </h2>
-        <p className="text-xs sm:text-sm text-white/55">
-          View your active plan, pending fee dues, and official payment receipts
-        </p>
       </div>
 
       {/* Dark Liquid Glass Active Plan Banner */}

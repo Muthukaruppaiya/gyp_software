@@ -17,6 +17,8 @@ import { useTransactionPopup } from '../../context/TransactionPopupContext';
 import StatCard from '../../components/StatCard';
 import StatusBadge from '../../components/StatusBadge';
 import Avatar from '../../components/Avatar';
+import { gymLocationSet } from '../../utils/geo';
+import { MapPin as MapPinIcon } from 'lucide-react';
 
 export default function OwnerDashboard() {
   const { gym } = useAuth();
@@ -104,6 +106,18 @@ export default function OwnerDashboard() {
 
   return (
     <div className="space-y-6">
+      {gym && !gymLocationSet(gym) && (
+        <Link
+          to="/owner/profile"
+          className="flex items-center justify-between gap-3 rounded-2xl border border-rose-500/35 bg-rose-500/10 px-4 py-3 text-xs font-bold text-rose-200 hover:bg-rose-500/15"
+        >
+          <span className="flex items-center gap-2">
+            <MapPinIcon className="h-4 w-4" />
+            Set your gym location to enable member self check-in
+          </span>
+          <span className="text-rose-300">Set now →</span>
+        </Link>
+      )}
       {/* Apple-Style Hero Studio Banner */}
       <div className="relative overflow-hidden rounded-[30px] border border-white/15 shadow-[0_20px_50px_-15px_rgba(0,0,0,0.6)] bg-[#0c0c0e]">
         <img
@@ -277,7 +291,6 @@ export default function OwnerDashboard() {
           <div className="flex items-start justify-between gap-2">
             <div>
               <h3 className="text-base font-extrabold text-white">Recent Activity</h3>
-              <p className="text-xs text-white/55">7-day check-ins capsule view</p>
             </div>
             <span className="rounded-full glass-chip px-3 py-1 text-[11px] font-bold text-white">7 Days</span>
           </div>

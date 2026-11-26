@@ -183,9 +183,6 @@ export default function OwnerMembers() {
           <h2 className="text-2xl font-extrabold tracking-tight text-white">
             Gym Members <span className="font-normal italic text-white/60">& Onboarding</span>
           </h2>
-          <p className="text-xs sm:text-sm text-white/55">
-            Onboard new clients with Name & Phone to generate an access code, or manage profiles
-          </p>
         </div>
         <button
           onClick={openOnboardModal}
@@ -408,10 +405,6 @@ export default function OwnerMembers() {
 
         {!editingMember ? (
           <form onSubmit={handleSubmit} className="space-y-4">
-            <div className="rounded-2xl border border-[#E56717]/25 bg-[#E56717]/12 p-3.5 text-xs text-[#FFC9A6] leading-relaxed">
-              Enter only the client&apos;s <strong>Name</strong> and <strong>Phone Number</strong>. A unique onboarding
-              code will be generated so the client can activate and fill in their full profile & photo.
-            </div>
             <div>
               <label className="block text-xs font-bold text-white/80 mb-1">Client Full Name *</label>
               <input
@@ -452,25 +445,6 @@ export default function OwnerMembers() {
                   </option>
                 ))}
               </select>
-              {(() => {
-                const selected = plans.find((p) => String(p.id) === String(form.plan_id));
-                if (!selected) return null;
-                const hasFirst = selected.first_month_price != null;
-                return (
-                  <p className="mt-1.5 text-[11px] text-white/55">
-                    Joining fee due created:{' '}
-                    <span className="font-bold text-[#FF9A5A]">
-                      {formatCurrency(hasFirst ? selected.first_month_price : selected.price, currency)}
-                    </span>
-                    {hasFirst && (
-                      <>
-                        {' '}
-                        (first-month price). Renewals: {formatCurrency(selected.price, currency)} / {selected.duration_days} days.
-                      </>
-                    )}
-                  </p>
-                );
-              })()}
             </div>
             <div className="flex justify-end gap-2 pt-2">
               <button

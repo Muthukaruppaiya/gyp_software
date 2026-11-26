@@ -1,11 +1,11 @@
 import express from 'express';
 import { query } from '../db/pool.js';
-import { authenticate, requireRole } from '../middleware/auth.js';
+import { authenticate, requireRole, requireGymUser } from '../middleware/auth.js';
 import { planInvoiceTitle, quotePlanForMember } from '../utils/pricing.js';
 
 const router = express.Router();
 
-router.use(authenticate);
+router.use(authenticate, requireGymUser);
 
 function parseId(value) {
   const n = Number(value);
@@ -64,9 +64,9 @@ router.get('/', async (req, res) => {
   try {
     const includeInactive = req.user.role === 'owner' && req.query.all === 'true';
     const sql = includeInactive
-      ? 'SELECT * FROM membership_plans ORDER BY is_active DESC, duration_days ASC, id ASC'
-      : 'SELECT * FROM membership_plans WHERE is_active = TRUE ORDER BY duration_days ASC, id ASC';
-    const { rows } = await query(sql);
+      ? 'SELECT * FROM membership_plans WHERE gym_id = $1 ORDER BY is_active DESC, duration_days ASC, id ASC'
+      : 'SELECT * FROM membership_plans WHERE gym_id = $1 AND is_active = TRUE ORDER BY duration_days ASC, id ASC';
+    const { rows } = await query(sql, [req.user.gym_id]);
     res.json({ plans: rows });
   } catch (err) {
     console.error('Get plans error:', err);
@@ -81,9 +81,19 @@ router.get('/:id/quote', requireRole('owner'), async (req, res) => {
     if (!planId) return res.status(400).json({ error: 'Invalid plan id' });
     const memberId = req.query.memberId ? parseId(req.query.memberId) : null;
 
-    const { rows } = await query('SELECT * FROM membership_plans WHERE id = $1', [planId]);
+    const { rows } = await query('SELECT * FROM membership_plans WHERE id = $1 AND gym_id = $2', [
+      planId,
+      req.user.gym_id,
+    ]);
     const plan = rows[0];
     if (!plan) return res.status(404).json({ error: 'Plan not found' });
+    if (memberId) {
+      const m = await query("SELECT 1 FROM users WHERE id = $1 AND role = 'customer' AND gym_id = $2", [
+        memberId,
+        req.user.gym_id,
+      ]);
+      if (m.rowCount === 0) return res.status(404).json({ error: 'Member not found' });
+    }
 
     const quote = await quotePlanForMember({ query }, plan, memberId);
     res.json({ ...quote, title: planInvoiceTitle(plan, quote.tier), plan_id: plan.id });
@@ -100,8 +110,8 @@ router.post('/', requireRole('owner'), async (req, res) => {
     if (error) return res.status(400).json({ error });
 
     const { rows } = await query(
-      `INSERT INTO membership_plans (name, duration_days, price, first_month_price, description, is_active)
-       VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
+      `INSERT INTO membership_plans (name, duration_days, price, first_month_price, description, is_active, gym_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
       [
         values.name,
         values.duration_days,
@@ -109,6 +119,7 @@ router.post('/', requireRole('owner'), async (req, res) => {
         values.first_month_price ?? null,
         values.description ?? '',
         values.is_active ?? true,
+        req.user.gym_id,
       ]
     );
     res.status(201).json({ plan: rows[0] });
@@ -131,11 +142,11 @@ router.put('/:id', requireRole('owner'), async (req, res) => {
     if (columns.length === 0) return res.status(400).json({ error: 'Nothing to update' });
 
     const params = columns.map((c) => values[c]);
-    params.push(planId);
+    params.push(planId, req.user.gym_id);
     const { rows } = await query(
       `UPDATE membership_plans
        SET ${columns.map((c, i) => `${c} = $${i + 1}`).join(', ')}
-       WHERE id = $${params.length}
+       WHERE id = $${params.length - 1} AND gym_id = $${params.length}
        RETURNING *`,
       params
     );

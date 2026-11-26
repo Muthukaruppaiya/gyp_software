@@ -15,9 +15,13 @@ import CustomerDashboard from './pages/customer/CustomerDashboard';
 import CustomerAttendance from './pages/customer/CustomerAttendance';
 import CustomerFees from './pages/customer/CustomerFees';
 import CustomerProfile from './pages/customer/CustomerProfile';
+import OwnerSetup from './pages/owner/OwnerSetup';
+import AdminDashboard from './pages/admin/AdminDashboard';
+import AdminGymDetail from './pages/admin/AdminGymDetail';
+import { homePath, setupLockPath } from './utils/home';
 
 function ProtectedRoute({ allowedRole, children }) {
-  const { user, profile, loading } = useAuth();
+  const { user, profile, gym, loading } = useAuth();
   const location = useLocation();
 
   if (loading) {
@@ -29,24 +33,20 @@ function ProtectedRoute({ allowedRole, children }) {
   }
   if (!user) return <Navigate to="/login" replace />;
   if (allowedRole && user.role !== allowedRole) {
-    return <Navigate to={user.role === 'owner' ? '/owner' : '/member'} replace />;
+    return <Navigate to={homePath(user, profile, gym)} replace />;
   }
 
-  // Enforce first-time profile completion before entering normal customer flow
-  if (
-    user.role === 'customer' &&
-    profile &&
-    profile.onboarding_completed === false &&
-    location.pathname !== '/member/profile'
-  ) {
-    return <Navigate to="/member/profile" replace />;
+  // First-time setup (member profile / gym owner activation) must be finished first.
+  const lock = setupLockPath(user, profile, gym);
+  if (lock && location.pathname !== lock) {
+    return <Navigate to={lock} replace />;
   }
 
   return <Layout>{children}</Layout>;
 }
 
 function HomeRedirect() {
-  const { user, profile, loading } = useAuth();
+  const { user, profile, gym, loading } = useAuth();
   if (loading) {
     return (
       <div className="min-h-screen bg-[#08080A] flex items-center justify-center text-sm text-slate-400">
@@ -54,12 +54,7 @@ function HomeRedirect() {
       </div>
     );
   }
-  if (!user) return <Navigate to="/login" replace />;
-  if (user.role === 'owner') return <Navigate to="/owner" replace />;
-  if (profile && profile.onboarding_completed === false) {
-    return <Navigate to="/member/profile" replace />;
-  }
-  return <Navigate to="/member" replace />;
+  return <Navigate to={homePath(user, profile, gym)} replace />;
 }
 
 export default function App() {
@@ -71,7 +66,33 @@ export default function App() {
             <Route path="/" element={<HomeRedirect />} />
             <Route path="/login" element={<LoginPage />} />
 
+            {/* Platform Super Admin */}
+            <Route
+              path="/admin"
+              element={
+                <ProtectedRoute allowedRole="superadmin">
+                  <AdminDashboard />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/admin/gyms/:id"
+              element={
+                <ProtectedRoute allowedRole="superadmin">
+                  <AdminGymDetail />
+                </ProtectedRoute>
+              }
+            />
+
             {/* Gym Owner Portal */}
+            <Route
+              path="/owner/setup"
+              element={
+                <ProtectedRoute allowedRole="owner">
+                  <OwnerSetup />
+                </ProtectedRoute>
+              }
+            />
             <Route
               path="/owner"
               element={

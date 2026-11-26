@@ -1,20 +1,20 @@
 import express from 'express';
 import { pool, query } from '../db/pool.js';
-import { authenticate, requireRole } from '../middleware/auth.js';
+import { authenticate, requireRole, requireGymUser } from '../middleware/auth.js';
 import { generateReceiptNumber, PAYMENT_METHODS, toPaise } from '../utils/codes.js';
 import { gymToday } from '../config.js';
 import { quotePlanForMember } from '../utils/pricing.js';
 
 const router = express.Router();
 
-router.use(authenticate);
+router.use(authenticate, requireGymUser);
 
 // GET /api/fees/invoices
 router.get('/invoices', async (req, res) => {
   try {
     const { status, memberId } = req.query;
-    const params = [];
-    const clauses = [];
+    const params = [req.user.gym_id];
+    const clauses = ['fi.gym_id = $1'];
 
     if (req.user.role === 'customer') {
       params.push(req.user.id);
@@ -68,7 +68,10 @@ router.post('/invoices', requireRole('owner'), async (req, res) => {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(String(due_date))) {
       return res.status(400).json({ error: 'Due date must be a valid date (YYYY-MM-DD)' });
     }
-    const memberCheck = await query("SELECT 1 FROM users WHERE id = $1 AND role = 'customer'", [Number(member_id)]);
+    const memberCheck = await query("SELECT 1 FROM users WHERE id = $1 AND role = 'customer' AND gym_id = $2", [
+      Number(member_id),
+      req.user.gym_id,
+    ]);
     if (memberCheck.rowCount === 0) {
       return res.status(404).json({ error: 'Member not found' });
     }
@@ -76,14 +79,17 @@ router.post('/invoices', requireRole('owner'), async (req, res) => {
     // Record whether this plan bill is the member's joining (first-month) bill or a renewal.
     let pricingTier = null;
     if (plan_id) {
-      const planRes = await query('SELECT * FROM membership_plans WHERE id = $1', [Number(plan_id)]);
+      const planRes = await query('SELECT * FROM membership_plans WHERE id = $1 AND gym_id = $2', [
+        Number(plan_id),
+        req.user.gym_id,
+      ]);
       if (planRes.rowCount === 0) return res.status(404).json({ error: 'Membership plan not found' });
       pricingTier = (await quotePlanForMember({ query }, planRes.rows[0], Number(member_id))).tier;
     }
 
     const { rows } = await query(
-      `INSERT INTO fee_invoices (member_id, plan_id, title, amount_due, amount_paid, due_date, status, period_start, period_end, pricing_tier)
-       VALUES ($1, $2, $3, $4, 0, $5, CASE WHEN $5::date < CURRENT_DATE THEN 'overdue' ELSE 'pending' END, $6, $7, $8)
+      `INSERT INTO fee_invoices (member_id, plan_id, title, amount_due, amount_paid, due_date, status, period_start, period_end, pricing_tier, gym_id)
+       VALUES ($1, $2, $3, $4, 0, $5, CASE WHEN $5::date < CURRENT_DATE THEN 'overdue' ELSE 'pending' END, $6, $7, $8, $9)
        RETURNING *`,
       [
         Number(member_id),
@@ -94,6 +100,7 @@ router.post('/invoices', requireRole('owner'), async (req, res) => {
         period_start || null,
         period_end || null,
         pricingTier,
+        req.user.gym_id,
       ]
     );
 
@@ -108,8 +115,8 @@ router.post('/invoices', requireRole('owner'), async (req, res) => {
 router.get('/payments', async (req, res) => {
   try {
     const { memberId, method } = req.query;
-    const params = [];
-    const clauses = [];
+    const params = [req.user.gym_id];
+    const clauses = ['p.gym_id = $1'];
 
     if (req.user.role === 'customer') {
       params.push(req.user.id);
@@ -164,9 +171,10 @@ router.post('/payments', requireRole('owner'), async (req, res) => {
     await client.query('BEGIN');
     inTransaction = true;
 
-    const memberCheck = await client.query("SELECT 1 FROM users WHERE id = $1 AND role = 'customer'", [
-      Number(member_id),
-    ]);
+    const memberCheck = await client.query(
+      "SELECT 1 FROM users WHERE id = $1 AND role = 'customer' AND gym_id = $2",
+      [Number(member_id), req.user.gym_id]
+    );
     if (memberCheck.rowCount === 0) {
       await client.query('ROLLBACK');
       return res.status(404).json({ error: 'Member not found' });
@@ -174,7 +182,10 @@ router.post('/payments', requireRole('owner'), async (req, res) => {
 
     let targetInvoiceId = invoice_id ? Number(invoice_id) : null;
     if (targetInvoiceId) {
-      const invRes = await client.query('SELECT * FROM fee_invoices WHERE id = $1 FOR UPDATE', [targetInvoiceId]);
+      const invRes = await client.query('SELECT * FROM fee_invoices WHERE id = $1 AND gym_id = $2 FOR UPDATE', [
+        targetInvoiceId,
+        req.user.gym_id,
+      ]);
       if (invRes.rowCount === 0) {
         await client.query('ROLLBACK');
         return res.status(404).json({ error: 'Invoice not found' });
@@ -214,7 +225,10 @@ router.post('/payments', requireRole('owner'), async (req, res) => {
       );
 
       if (extend_membership && newStatus === 'paid' && inv.plan_id) {
-        const planRes = await client.query('SELECT duration_days FROM membership_plans WHERE id = $1', [inv.plan_id]);
+        const planRes = await client.query('SELECT duration_days FROM membership_plans WHERE id = $1 AND gym_id = $2', [
+          inv.plan_id,
+          req.user.gym_id,
+        ]);
         if (planRes.rowCount > 0) {
           const days = planRes.rows[0].duration_days;
           await client.query(
@@ -235,10 +249,19 @@ router.post('/payments', requireRole('owner'), async (req, res) => {
     const receiptNumber = generateReceiptNumber(gymToday());
     const payRes = await client.query(
       `INSERT INTO payments (
-         invoice_id, member_id, amount, payment_method, receipt_number, reference_note, recorded_by
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+         invoice_id, member_id, amount, payment_method, receipt_number, reference_note, recorded_by, gym_id
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
        RETURNING *`,
-      [targetInvoiceId, Number(member_id), payAmount, payment_method, receiptNumber, reference_note || null, req.user.id]
+      [
+        targetInvoiceId,
+        Number(member_id),
+        payAmount,
+        payment_method,
+        receiptNumber,
+        reference_note || null,
+        req.user.id,
+        req.user.gym_id,
+      ]
     );
 
     await client.query('COMMIT');

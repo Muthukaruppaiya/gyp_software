@@ -68,7 +68,6 @@ export default function MembershipCountdown({ profile }) {
             {profile.plan_name || 'Membership'} • ends {formatDate(profile.plan_end_date)}
           </p>
           <p className={`text-lg sm:text-xl font-extrabold ${s.number}`}>{cd.headline}</p>
-          <p className={`text-xs ${s.text}`}>{cd.detail}</p>
         </div>
       </div>
 

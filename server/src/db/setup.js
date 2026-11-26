@@ -49,20 +49,20 @@ async function seedDatabase(client) {
   const ownerHash = await bcrypt.hash('owner123', 10);
   const memberHash = await bcrypt.hash('member123', 10);
 
-  // 1. Owner User
-  const ownerRes = await client.query(
-    `INSERT INTO users (email, password_hash, role, full_name, phone)
-     VALUES ($1, $2, 'owner', $3, $4) RETURNING id`,
-    ['owner@ironpulse.fit', ownerHash, 'Rajesh Nair', '+91 98450 11223']
-  );
-  const ownerId = ownerRes.rows[0].id;
-
-  // 2. Gym Settings
+  // 0. Platform super admin (sees every gym)
   await client.query(
-    `INSERT INTO gym_settings (owner_user_id, gym_name, tagline, phone, email, address, opening_hours, currency_symbol)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+    `INSERT INTO users (email, password_hash, role, full_name, gym_id)
+     VALUES ('admin@ironpulse.fit', $1, 'superadmin', 'Platform Admin', NULL)`,
+    [await bcrypt.hash('admin123', 10)]
+  );
+
+  // 1. Gym (tenant) row
+  const gymRes = await client.query(
+    `INSERT INTO gym_settings (gym_name, tagline, phone, email, address, opening_hours, currency_symbol,
+                               latitude, longitude, geofence_radius_m, owner_onboarded, status)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, 12.971900, 77.641200, 100, TRUE, 'active')
+     RETURNING id`,
     [
-      ownerId,
       'IronPulse Fitness Studio',
       'Strength • Conditioning • Community',
       '+91 98450 11223',
@@ -72,6 +72,16 @@ async function seedDatabase(client) {
       '₹',
     ]
   );
+  const gymId = gymRes.rows[0].id;
+
+  // 2. Owner of that gym
+  const ownerRes = await client.query(
+    `INSERT INTO users (email, password_hash, role, full_name, phone, gym_id)
+     VALUES ($1, $2, 'owner', $3, $4, $5) RETURNING id`,
+    ['owner@ironpulse.fit', ownerHash, 'Rajesh Nair', '+91 98450 11223', gymId]
+  );
+  const ownerId = ownerRes.rows[0].id;
+  await client.query('UPDATE gym_settings SET owner_user_id = $1 WHERE id = $2', [ownerId, gymId]);
 
   // 3. Membership Plans
   const plansData = [
@@ -85,9 +95,9 @@ async function seedDatabase(client) {
   const planIds = [];
   for (const [name, days, price, desc, firstMonthPrice] of plansData) {
     const res = await client.query(
-      `INSERT INTO membership_plans (name, duration_days, price, description, first_month_price)
-       VALUES ($1, $2, $3, $4, $5) RETURNING id, duration_days, price, name`,
-      [name, days, price, desc, firstMonthPrice]
+      `INSERT INTO membership_plans (name, duration_days, price, description, first_month_price, gym_id)
+       VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, duration_days, price, name`,
+      [name, days, price, desc, firstMonthPrice, gymId]
     );
     planIds.push(res.rows[0]);
   }
@@ -246,9 +256,9 @@ async function seedDatabase(client) {
   for (const m of membersSeed) {
     const plan = planIds[m.planIdx];
     const uRes = await client.query(
-      `INSERT INTO users (email, password_hash, role, full_name, phone)
-       VALUES ($1, $2, 'customer', $3, $4) RETURNING id`,
-      [m.email, memberHash, m.name, m.phone]
+      `INSERT INTO users (email, password_hash, role, full_name, phone, gym_id)
+       VALUES ($1, $2, 'customer', $3, $4, $5) RETURNING id`,
+      [m.email, memberHash, m.name, m.phone, gymId]
     );
     const userId = uRes.rows[0].id;
     memberIds.push({ userId, ...m });
@@ -301,8 +311,8 @@ async function seedDatabase(client) {
 
     const invRes = await client.query(
       `INSERT INTO fee_invoices (
-         member_id, plan_id, title, amount_due, amount_paid, due_date, status, period_start, period_end
-       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id`,
+         member_id, plan_id, title, amount_due, amount_paid, due_date, status, period_start, period_end, gym_id
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id`,
       [
         userId,
         plan.id,
@@ -313,6 +323,7 @@ async function seedDatabase(client) {
         m.feeStatus,
         startDate.toISOString().slice(0, 10),
         endDate.toISOString().slice(0, 10),
+        gymId,
       ]
     );
 
@@ -322,8 +333,8 @@ async function seedDatabase(client) {
       payDate.setHours(10, 30, 0, 0);
       await client.query(
         `INSERT INTO payments (
-           invoice_id, member_id, amount, payment_method, payment_date, receipt_number, reference_note, recorded_by
-         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+           invoice_id, member_id, amount, payment_method, payment_date, receipt_number, reference_note, recorded_by, gym_id
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
         [
           invRes.rows[0].id,
           userId,
@@ -333,6 +344,7 @@ async function seedDatabase(client) {
           `RCP-${receiptSeq++}`,
           m.feeStatus === 'partial' ? 'Initial 50% installment' : 'Full plan settlement',
           ownerId,
+          gymId,
         ]
       );
     }
@@ -356,14 +368,15 @@ async function seedDatabase(client) {
       const checkOut = new Date(checkIn.getTime() + durationMins * 60000);
 
       await client.query(
-        `INSERT INTO attendance_logs (member_id, check_in_time, check_out_time, marked_by, notes)
-         VALUES ($1, $2, $3, $4, $5)`,
+        `INSERT INTO attendance_logs (member_id, check_in_time, check_out_time, marked_by, notes, gym_id)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
         [
           m.userId,
           checkIn.toISOString(),
           checkOut.toISOString(),
           idx % 4 === 0 ? 'owner' : 'self',
           idx % 2 === 0 ? 'Morning strength session' : 'Evening conditioning',
+          gymId,
         ]
       );
     }
@@ -375,9 +388,9 @@ async function seedDatabase(client) {
   if (todayMorning < now) {
     const out1 = new Date(todayMorning.getTime() + 68 * 60000);
     await client.query(
-      `INSERT INTO attendance_logs (member_id, check_in_time, check_out_time, marked_by, notes)
-       VALUES ($1, $2, $3, 'self', 'Morning workout')`,
-      [memberIds[0].userId, todayMorning.toISOString(), out1.toISOString()]
+      `INSERT INTO attendance_logs (member_id, check_in_time, check_out_time, marked_by, notes, gym_id)
+       VALUES ($1, $2, $3, 'self', 'Morning workout', $4)`,
+      [memberIds[0].userId, todayMorning.toISOString(), out1.toISOString(), gymId]
     );
   }
 
@@ -385,13 +398,57 @@ async function seedDatabase(client) {
   const active1 = new Date(now.getTime() - 42 * 60000);
   const active2 = new Date(now.getTime() - 18 * 60000);
   await client.query(
-    `INSERT INTO attendance_logs (member_id, check_in_time, marked_by, notes)
-     VALUES ($1, $2, 'self', 'Evening session'), ($3, $4, 'owner', 'Front-desk check-in')`,
-    [memberIds[1].userId, active1.toISOString(), memberIds[2].userId, active2.toISOString()]
+    `INSERT INTO attendance_logs (member_id, check_in_time, marked_by, notes, gym_id)
+     VALUES ($1, $2, 'self', 'Evening session', $5), ($3, $4, 'owner', 'Front-desk check-in', $5)`,
+    [memberIds[1].userId, active1.toISOString(), memberIds[2].userId, active2.toISOString(), gymId]
+  );
+
+  // 6. A second, fully separate demo gym to show data isolation
+  const gym2 = (
+    await client.query(
+      `INSERT INTO gym_settings (gym_name, tagline, phone, email, address, currency_symbol,
+                                 latitude, longitude, geofence_radius_m, owner_onboarded, status)
+       VALUES ('FlexZone Gym', 'Train • Recover • Repeat', '+91 90031 44556', 'hello@flexzone.fit',
+               'Anna Nagar 2nd Avenue, Chennai 600040', '₹', 13.085000, 80.210100, 100, TRUE, 'active')
+       RETURNING id`
+    )
+  ).rows[0].id;
+  const owner2 = (
+    await client.query(
+      `INSERT INTO users (email, password_hash, role, full_name, phone, gym_id)
+       VALUES ('owner@flexzone.fit', $1, 'owner', 'Meena Subramanian', '+91 90031 44556', $2) RETURNING id`,
+      [ownerHash, gym2]
+    )
+  ).rows[0].id;
+  await client.query('UPDATE gym_settings SET owner_user_id = $1 WHERE id = $2', [owner2, gym2]);
+  const plan2 = (
+    await client.query(
+      `INSERT INTO membership_plans (name, duration_days, price, first_month_price, description, gym_id)
+       VALUES ('Monthly Flex', 30, 1200, 1700, 'Gym floor + group classes', $1) RETURNING id`,
+      [gym2]
+    )
+  ).rows[0].id;
+  const flexMember = (
+    await client.query(
+      `INSERT INTO users (email, password_hash, role, full_name, phone, gym_id)
+       VALUES ('lakshmi@flexzone.fit', $1, 'customer', 'Lakshmi Rao', '+91 90031 77889', $2) RETURNING id`,
+      [memberHash, gym2]
+    )
+  ).rows[0].id;
+  await client.query(
+    `INSERT INTO member_profiles (user_id, member_code, plan_id, plan_start_date, plan_end_date, membership_status)
+     VALUES ($1, 'FLX-2001', $2, CURRENT_DATE - 5, CURRENT_DATE + 25, 'active')`,
+    [flexMember, plan2]
+  );
+  await client.query(
+    `INSERT INTO fee_invoices (member_id, plan_id, title, amount_due, amount_paid, due_date, status, pricing_tier, gym_id)
+     VALUES ($1, $2, 'Monthly Flex — Joining (First Month)', 1700, 1700, CURRENT_DATE - 5, 'paid', 'first', $3)`,
+    [flexMember, plan2, gym2]
   );
 
   console.log('Seed data inserted successfully.');
-  console.log('Demo Owner Login:    owner@ironpulse.fit / owner123');
+  console.log('Super Admin Login:   admin@ironpulse.fit / admin123');
+  console.log('Demo Owner Login:    owner@ironpulse.fit / owner123   (2nd gym: owner@flexzone.fit / owner123)');
   console.log('Demo Customer Login: arjun@ironpulse.fit / member123');
 }
 

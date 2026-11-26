@@ -100,7 +100,6 @@ export default function CustomerVisits() {
           <h2 className="text-xl sm:text-2xl font-extrabold tracking-tight text-white">
             My <span className="font-normal italic text-[#FFD2B3]">Visits</span>
           </h2>
-          <p className="text-xs text-white/55">Your gym attendance, day by day</p>
         </div>
       </div>
 

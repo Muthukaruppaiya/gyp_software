@@ -34,7 +34,8 @@ export async function apiFetch(path, options = {}) {
 
   // Session expired, account deleted, or deactivated by the owner: sign out instead of
   // leaving the user on a page where every request fails.
-  const sessionDead = res.status === 401 || (res.status === 403 && data.code === 'ACCOUNT_DEACTIVATED');
+  const sessionDead =
+    res.status === 401 || (res.status === 403 && ['ACCOUNT_DEACTIVATED', 'GYM_SUSPENDED'].includes(data.code));
   if (token && sessionDead && !path.startsWith('/auth/login') && !path.startsWith('/auth/onboard-login')) {
     setToken(null);
     if (window.location.pathname !== '/login') window.location.assign('/login');

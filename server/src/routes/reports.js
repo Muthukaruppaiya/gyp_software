@@ -7,9 +7,12 @@ const router = express.Router();
 
 router.use(authenticate, requireRole('owner'));
 
+// Every query below is scoped to the signed-in owner's gym ($1 = gym_id).
+
 // GET /api/reports/overview
 router.get('/overview', async (req, res) => {
   try {
+    const g = [req.user.gym_id];
     const [
       membersStats,
       liveInGym,
@@ -27,45 +30,56 @@ router.get('/overview', async (req, res) => {
            COUNT(*)::int AS total_members
          FROM users u
          JOIN member_profiles mp ON mp.user_id = u.id
-         WHERE u.role = 'customer'`
+         WHERE u.role = 'customer' AND u.gym_id = $1`,
+        g
       ),
-      query('SELECT COUNT(*)::int AS count FROM attendance_logs WHERE check_out_time IS NULL'),
-      query('SELECT COUNT(*)::int AS count FROM attendance_logs WHERE check_in_time::date = CURRENT_DATE'),
+      query('SELECT COUNT(*)::int AS count FROM attendance_logs WHERE gym_id = $1 AND check_out_time IS NULL', g),
+      query(
+        'SELECT COUNT(*)::int AS count FROM attendance_logs WHERE gym_id = $1 AND check_in_time::date = CURRENT_DATE',
+        g
+      ),
       query(
         `SELECT COALESCE(SUM(amount), 0)::numeric(10,2) AS total
          FROM payments
-         WHERE DATE_TRUNC('month', payment_date) = DATE_TRUNC('month', CURRENT_DATE)`
+         WHERE gym_id = $1 AND DATE_TRUNC('month', payment_date) = DATE_TRUNC('month', CURRENT_DATE)`,
+        g
       ),
       query(
         `SELECT COALESCE(SUM(amount_due - amount_paid), 0)::numeric(10,2) AS total,
                 COUNT(*)::int AS invoice_count
          FROM fee_invoices
-         WHERE status IN ('pending', 'partial', 'overdue')`
+         WHERE gym_id = $1 AND status IN ('pending', 'partial', 'overdue')`,
+        g
       ),
       query(
         `SELECT u.id, u.full_name, u.phone, mp.member_code, mp.profile_image, mp.plan_end_date, pl.name AS plan_name
          FROM member_profiles mp
          JOIN users u ON u.id = mp.user_id
          LEFT JOIN membership_plans pl ON pl.id = mp.plan_id
-         WHERE mp.plan_end_date BETWEEN CURRENT_DATE AND (CURRENT_DATE + INTERVAL '14 days')
+         WHERE u.gym_id = $1
+           AND mp.plan_end_date BETWEEN CURRENT_DATE AND (CURRENT_DATE + INTERVAL '14 days')
          ORDER BY mp.plan_end_date ASC
-         LIMIT 6`
+         LIMIT 6`,
+        g
       ),
       query(
         `SELECT al.*, u.full_name, mp.member_code, mp.profile_image
          FROM attendance_logs al
          JOIN users u ON u.id = al.member_id
          LEFT JOIN member_profiles mp ON mp.user_id = u.id
+         WHERE al.gym_id = $1
          ORDER BY al.check_in_time DESC
-         LIMIT 8`
+         LIMIT 8`,
+        g
       ),
       query(
         `SELECT d::date AS day,
                 COUNT(al.id)::int AS checkins
          FROM generate_series(CURRENT_DATE - INTERVAL '6 days', CURRENT_DATE, INTERVAL '1 day') d
-         LEFT JOIN attendance_logs al ON al.check_in_time::date = d::date
+         LEFT JOIN attendance_logs al ON al.check_in_time::date = d::date AND al.gym_id = $1
          GROUP BY d::date
-         ORDER BY d::date ASC`
+         ORDER BY d::date ASC`,
+        g
       ),
     ]);
 
@@ -95,6 +109,7 @@ router.get('/attendance', async (req, res) => {
   try {
     const from = req.query.from || gymToday(-30);
     const to = req.query.to || gymToday();
+    const p = [req.user.gym_id, from, to];
 
     const [summaryRes, dailyRes, peakHoursRes, topMembersRes] = await Promise.all([
       query(
@@ -103,27 +118,27 @@ router.get('/attendance', async (req, res) => {
            COUNT(DISTINCT member_id)::int AS unique_members,
            COALESCE(ROUND(AVG(duration_minutes)), 0)::int AS avg_duration_minutes
          FROM attendance_logs
-         WHERE check_in_time::date BETWEEN $1::date AND $2::date`,
-        [from, to]
+         WHERE gym_id = $1 AND check_in_time::date BETWEEN $2::date AND $3::date`,
+        p
       ),
       query(
         `SELECT check_in_time::date AS date,
                 COUNT(*)::int AS visits,
                 COALESCE(ROUND(AVG(duration_minutes)), 0)::int AS avg_minutes
          FROM attendance_logs
-         WHERE check_in_time::date BETWEEN $1::date AND $2::date
+         WHERE gym_id = $1 AND check_in_time::date BETWEEN $2::date AND $3::date
          GROUP BY check_in_time::date
          ORDER BY check_in_time::date DESC`,
-        [from, to]
+        p
       ),
       query(
         `SELECT EXTRACT(HOUR FROM check_in_time)::int AS hour,
                 COUNT(*)::int AS visits
          FROM attendance_logs
-         WHERE check_in_time::date BETWEEN $1::date AND $2::date
+         WHERE gym_id = $1 AND check_in_time::date BETWEEN $2::date AND $3::date
          GROUP BY EXTRACT(HOUR FROM check_in_time)
          ORDER BY hour ASC`,
-        [from, to]
+        p
       ),
       query(
         `SELECT u.id, u.full_name, mp.member_code, mp.profile_image,
@@ -132,11 +147,11 @@ router.get('/attendance', async (req, res) => {
          FROM attendance_logs al
          JOIN users u ON u.id = al.member_id
          LEFT JOIN member_profiles mp ON mp.user_id = u.id
-         WHERE al.check_in_time::date BETWEEN $1::date AND $2::date
+         WHERE al.gym_id = $1 AND al.check_in_time::date BETWEEN $2::date AND $3::date
          GROUP BY u.id, u.full_name, mp.member_code, mp.profile_image
          ORDER BY visits DESC, total_minutes DESC
          LIMIT 10`,
-        [from, to]
+        p
       ),
     ]);
 
@@ -158,6 +173,7 @@ router.get('/revenue', async (req, res) => {
   try {
     const from = req.query.from || gymToday(-90);
     const to = req.query.to || gymToday();
+    const p = [req.user.gym_id, from, to];
 
     const [totalsRes, byMethodRes, byMonthRes, outstandingRes] = await Promise.all([
       query(
@@ -165,28 +181,28 @@ router.get('/revenue', async (req, res) => {
            COALESCE(SUM(amount), 0)::numeric(10,2) AS total_collected,
            COUNT(*)::int AS payment_count
          FROM payments
-         WHERE payment_date::date BETWEEN $1::date AND $2::date`,
-        [from, to]
+         WHERE gym_id = $1 AND payment_date::date BETWEEN $2::date AND $3::date`,
+        p
       ),
       query(
         `SELECT payment_method,
                 COALESCE(SUM(amount), 0)::numeric(10,2) AS total,
                 COUNT(*)::int AS count
          FROM payments
-         WHERE payment_date::date BETWEEN $1::date AND $2::date
+         WHERE gym_id = $1 AND payment_date::date BETWEEN $2::date AND $3::date
          GROUP BY payment_method
          ORDER BY total DESC`,
-        [from, to]
+        p
       ),
       query(
         `SELECT TO_CHAR(DATE_TRUNC('month', payment_date), 'YYYY-MM') AS month,
                 COALESCE(SUM(amount), 0)::numeric(10,2) AS total,
                 COUNT(*)::int AS count
          FROM payments
-         WHERE payment_date::date BETWEEN $1::date AND $2::date
+         WHERE gym_id = $1 AND payment_date::date BETWEEN $2::date AND $3::date
          GROUP BY DATE_TRUNC('month', payment_date)
          ORDER BY DATE_TRUNC('month', payment_date) DESC`,
-        [from, to]
+        p
       ),
       query(
         `SELECT fi.id, fi.title, fi.amount_due, fi.amount_paid,
@@ -196,8 +212,9 @@ router.get('/revenue', async (req, res) => {
          FROM fee_invoices fi
          JOIN users u ON u.id = fi.member_id
          LEFT JOIN member_profiles mp ON mp.user_id = u.id
-         WHERE fi.status IN ('pending', 'partial', 'overdue')
-         ORDER BY fi.due_date ASC`
+         WHERE fi.gym_id = $1 AND fi.status IN ('pending', 'partial', 'overdue')
+         ORDER BY fi.due_date ASC`,
+        [req.user.gym_id]
       ),
     ]);
 
@@ -218,6 +235,7 @@ router.get('/revenue', async (req, res) => {
 router.get('/export', async (req, res) => {
   try {
     const type = req.query.type || 'attendance';
+    const g = [req.user.gym_id];
     let headers = [];
     let rows = [];
 
@@ -227,7 +245,9 @@ router.get('/export', async (req, res) => {
          FROM attendance_logs al
          JOIN users u ON u.id = al.member_id
          LEFT JOIN member_profiles mp ON mp.user_id = u.id
-         ORDER BY al.check_in_time DESC LIMIT 1000`
+         WHERE al.gym_id = $1
+         ORDER BY al.check_in_time DESC LIMIT 1000`,
+        g
       );
       headers = ['Member Code', 'Member Name', 'Check In Time', 'Check Out Time', 'Duration (mins)', 'Marked By', 'Notes'];
       rows = result.rows.map((r) => [
@@ -246,7 +266,9 @@ router.get('/export', async (req, res) => {
          JOIN users u ON u.id = p.member_id
          LEFT JOIN member_profiles mp ON mp.user_id = u.id
          LEFT JOIN fee_invoices fi ON fi.id = p.invoice_id
-         ORDER BY p.payment_date DESC LIMIT 1000`
+         WHERE p.gym_id = $1
+         ORDER BY p.payment_date DESC LIMIT 1000`,
+        g
       );
       headers = ['Receipt #', 'Date', 'Member Code', 'Member Name', 'Fee Title', 'Amount', 'Method', 'Notes'];
       rows = result.rows.map((r) => [
@@ -265,8 +287,9 @@ router.get('/export', async (req, res) => {
          FROM users u
          JOIN member_profiles mp ON mp.user_id = u.id
          LEFT JOIN membership_plans pl ON pl.id = mp.plan_id
-         WHERE u.role = 'customer'
-         ORDER BY u.full_name ASC`
+         WHERE u.role = 'customer' AND u.gym_id = $1
+         ORDER BY u.full_name ASC`,
+        g
       );
       headers = ['Member Code', 'Name', 'Email', 'Phone', 'Plan', 'Status', 'Start Date', 'End Date', 'Fitness Goal'];
       rows = result.rows.map((r) => [

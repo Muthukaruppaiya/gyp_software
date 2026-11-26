@@ -1,11 +1,12 @@
 import { useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Save, Building2, Lock, IndianRupee, UserCog, Share2, Wallet, ImageIcon } from 'lucide-react';
+import { Save, Building2, Lock, IndianRupee, UserCog, Share2, Wallet, ImageIcon, MapPin, LocateFixed, ExternalLink, Loader2 } from 'lucide-react';
 import { apiFetch } from '../../api/client';
 import { useAuth } from '../../context/AuthContext';
 import { useTransactionPopup } from '../../context/TransactionPopupContext';
 import AvatarUpload from '../../components/AvatarUpload';
 import PlanPricingManager from '../../components/PlanPricingManager';
+import { getCurrentPosition, mapsLink } from '../../utils/geo';
 
 const TABS = [
   { id: 'gym', label: 'Gym Profile', icon: Building2 },
@@ -27,14 +28,18 @@ const EMPTY_GYM = {
   instagram: '',
   upi_id: '',
   gstin: '',
+  latitude: '',
+  longitude: '',
+  geofence_radius_m: 100,
 };
+
+const RADIUS_OPTIONS = [50, 100, 150, 200, 300, 500];
 
 function Field({ label, hint, className = '', children }) {
   return (
     <div className={className}>
       <label className="block text-xs font-bold text-white/80 mb-1">{label}</label>
       {children}
-      {hint && <p className="mt-1 text-[11px] text-white/45">{hint}</p>}
     </div>
   );
 }
@@ -59,6 +64,22 @@ export default function OwnerProfile() {
   const [pwForm, setPwForm] = useState({ currentPassword: '', newPassword: '' });
   const [err, setErr] = useState('');
   const [saving, setSaving] = useState(false);
+  const [locating, setLocating] = useState(false);
+
+  async function useCurrentLocation() {
+    setErr('');
+    setLocating(true);
+    try {
+      const pos = await getCurrentPosition();
+      setGymForm((f) => ({ ...f, latitude: pos.latitude.toFixed(6), longitude: pos.longitude.toFixed(6) }));
+    } catch (error) {
+      setErr(error.message);
+    } finally {
+      setLocating(false);
+    }
+  }
+
+  const hasLocation = gymForm.latitude !== '' && gymForm.longitude !== '';
 
   useEffect(() => {
     apiFetch('/profile').then((data) => {
@@ -142,9 +163,6 @@ export default function OwnerProfile() {
         <h2 className="text-2xl font-extrabold tracking-tight text-white">
           Gym <span className="font-normal italic text-white/60">Settings</span>
         </h2>
-        <p className="text-xs sm:text-sm text-white/55">
-          Manage your gym profile, membership pricing, and owner account
-        </p>
       </div>
 
       <div className="inline-flex max-w-full overflow-x-auto rounded-full glass-subtle p-1">
@@ -244,6 +262,100 @@ export default function OwnerProfile() {
           </div>
 
           <div className="glass-card p-6 space-y-5">
+            <div className="flex items-center justify-between gap-2 border-b border-white/10 pb-3">
+              <div className="flex items-center gap-2 text-sm font-extrabold text-white">
+                <MapPin className="h-4 w-4 text-[#E56717]" />
+                Check-in Location
+              </div>
+              <span
+                className={`rounded-full px-3 py-1 text-[11px] font-bold ${
+                  hasLocation
+                    ? 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/30'
+                    : 'bg-rose-500/15 text-rose-300 border border-rose-500/30'
+                }`}
+              >
+                {hasLocation ? 'Active' : 'Not set'}
+              </span>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              <Field label="Latitude">
+                <input
+                  type="number"
+                  step="any"
+                  min="-90"
+                  max="90"
+                  value={gymForm.latitude}
+                  onChange={setG('latitude')}
+                  placeholder="12.971900"
+                  className="input-glass w-full px-4 py-2.5 text-sm font-mono"
+                />
+              </Field>
+              <Field label="Longitude">
+                <input
+                  type="number"
+                  step="any"
+                  min="-180"
+                  max="180"
+                  value={gymForm.longitude}
+                  onChange={setG('longitude')}
+                  placeholder="77.641200"
+                  className="input-glass w-full px-4 py-2.5 text-sm font-mono"
+                />
+              </Field>
+              <Field label="Allowed Radius">
+                <select
+                  value={gymForm.geofence_radius_m}
+                  onChange={(e) => setGymForm({ ...gymForm, geofence_radius_m: Number(e.target.value) })}
+                  className="input-glass w-full px-4 py-2.5 text-sm"
+                >
+                  {[...new Set([...RADIUS_OPTIONS, Number(gymForm.geofence_radius_m) || 100])]
+                    .sort((a, b) => a - b)
+                    .map((r) => (
+                      <option key={r} value={r}>
+                        {r} m
+                      </option>
+                    ))}
+                </select>
+              </Field>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={useCurrentLocation}
+                disabled={locating}
+                className="inline-flex items-center gap-1.5 rounded-full glass-chip px-4 py-2.5 text-xs font-bold text-white hover:bg-white/20 disabled:opacity-60"
+              >
+                {locating ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <LocateFixed className="h-3.5 w-3.5 text-[#FF8F4A]" />
+                )}
+                Use My Current Location
+              </button>
+              {hasLocation && (
+                <a
+                  href={mapsLink(gymForm.latitude, gymForm.longitude)}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center gap-1.5 rounded-full border border-white/12 bg-white/6 px-4 py-2.5 text-xs font-bold text-white/80 hover:bg-white/12"
+                >
+                  <ExternalLink className="h-3.5 w-3.5" />
+                  View on Map
+                </a>
+              )}
+              {hasLocation && (
+                <button
+                  type="button"
+                  onClick={() => setGymForm({ ...gymForm, latitude: '', longitude: '' })}
+                  className="inline-flex items-center gap-1.5 rounded-full px-4 py-2.5 text-xs font-bold text-rose-300 hover:bg-rose-500/10"
+                >
+                  Clear
+                </button>
+              )}
+            </div>
+          </div>
+
+          <div className="glass-card p-6 space-y-5">
             <SectionTitle icon={Share2}>Online Presence</SectionTitle>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <Field label="Website">
@@ -270,7 +382,7 @@ export default function OwnerProfile() {
           <div className="glass-card p-6 space-y-5">
             <SectionTitle icon={Wallet}>Payments & Billing</SectionTitle>
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-              <Field label="UPI ID" hint="Shown to members in their renewal reminder">
+              <Field label="UPI ID">
                 <input
                   type="text"
                   value={gymForm.upi_id}
@@ -279,7 +391,7 @@ export default function OwnerProfile() {
                   className="input-glass w-full px-4 py-2.5 text-sm"
                 />
               </Field>
-              <Field label="GSTIN (optional)" hint="15-character GST number">
+              <Field label="GSTIN (optional)">
                 <input
                   type="text"
                   maxLength={15}
@@ -299,13 +411,6 @@ export default function OwnerProfile() {
                 />
               </Field>
             </div>
-            <p className="text-xs text-white/50">
-              Plan prices (first-month and regular) are managed in the{' '}
-              <button type="button" onClick={() => switchTab('pricing')} className="font-bold text-[#FF8F4A] hover:underline">
-                Membership Pricing
-              </button>{' '}
-              tab.
-            </p>
           </div>
 
           <button

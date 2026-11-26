@@ -4,7 +4,6 @@ import crypto from 'crypto';
 import { pool, query } from '../db/pool.js';
 import { authenticate, requireRole } from '../middleware/auth.js';
 import {
-  generateOnboardingCode,
   generateReceiptNumber,
   MEMBERSHIP_STATUSES,
   PAYMENT_METHODS,
@@ -13,6 +12,7 @@ import {
 } from '../utils/codes.js';
 import { gymToday } from '../config.js';
 import { planInvoiceTitle, quotePlanForMember } from '../utils/pricing.js';
+import { generateUniqueAccessCode } from '../utils/gym.js';
 
 const router = express.Router();
 
@@ -42,8 +42,8 @@ router.get('/', async (req, res) => {
     const search = (req.query.search || '').trim();
     const status = (req.query.status || '').trim();
 
-    let where = `WHERE u.role = 'customer'`;
-    const params = [];
+    const params = [req.user.gym_id];
+    let where = `WHERE u.role = 'customer' AND u.gym_id = $1`;
 
     if (search) {
       params.push(`%${search}%`);
@@ -105,8 +105,8 @@ router.get('/:id', async (req, res) => {
        FROM users u
        JOIN member_profiles mp ON mp.user_id = u.id
        LEFT JOIN membership_plans pl ON pl.id = mp.plan_id
-       WHERE u.id = $1 AND u.role = 'customer'`,
-      [memberId]
+       WHERE u.id = $1 AND u.role = 'customer' AND u.gym_id = $2`,
+      [memberId, req.user.gym_id]
     );
     if (memberRes.rowCount === 0) {
       return res.status(404).json({ error: 'Member not found' });
@@ -179,28 +179,23 @@ router.post('/', async (req, res) => {
     // Unusable random password until the member sets their own during onboarding.
     const tempPassHash = await bcrypt.hash(crypto.randomBytes(24).toString('hex'), 10);
     const uRes = await client.query(
-      `INSERT INTO users (email, password_hash, role, full_name, phone)
-       VALUES (NULL, $1, 'customer', $2, $3)
+      `INSERT INTO users (email, password_hash, role, full_name, phone, gym_id)
+       VALUES (NULL, $1, 'customer', $2, $3, $4)
        RETURNING id, email, role, full_name, phone, is_active`,
-      [tempPassHash, String(full_name).trim(), String(phone).trim()]
+      [tempPassHash, String(full_name).trim(), String(phone).trim(), req.user.gym_id]
     );
     const user = uRes.rows[0];
     const memberCode = `IPF-${1000 + user.id}`;
 
-    // Pick a code not already in use (collisions are astronomically rare, but never 500 on one).
-    let onboardingCode = null;
-    for (let attempt = 0; attempt < 5 && !onboardingCode; attempt++) {
-      const candidate = generateOnboardingCode(full_name);
-      const taken = await client.query('SELECT 1 FROM member_profiles WHERE UPPER(onboarding_code) = $1', [
-        candidate,
-      ]);
-      if (taken.rowCount === 0) onboardingCode = candidate;
-    }
-    if (!onboardingCode) throw new Error('Could not generate a unique onboarding code');
+    // Unique across member and gym-owner codes (both use the same Access Code login).
+    const onboardingCode = await generateUniqueAccessCode(client, full_name);
 
     let plan = null;
     if (plan_id) {
-      const pRes = await client.query('SELECT * FROM membership_plans WHERE id = $1', [Number(plan_id)]);
+      const pRes = await client.query('SELECT * FROM membership_plans WHERE id = $1 AND gym_id = $2', [
+        Number(plan_id),
+        req.user.gym_id,
+      ]);
       plan = pRes.rows[0] || null;
       if (!plan) {
         await client.query('ROLLBACK');
@@ -235,8 +230,8 @@ router.post('/', async (req, res) => {
 
       const invRes = await client.query(
         `INSERT INTO fee_invoices (
-           member_id, plan_id, title, amount_due, amount_paid, due_date, status, period_start, period_end, pricing_tier
-         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id`,
+           member_id, plan_id, title, amount_due, amount_paid, due_date, status, period_start, period_end, pricing_tier, gym_id
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id`,
         [
           user.id,
           plan.id,
@@ -248,15 +243,16 @@ router.post('/', async (req, res) => {
           startDate,
           endDate,
           quote.tier,
+          req.user.gym_id,
         ]
       );
 
       if (paidNow > 0) {
         await client.query(
           `INSERT INTO payments (
-             invoice_id, member_id, amount, payment_method, receipt_number, reference_note, recorded_by
-           ) VALUES ($1,$2,$3,$4,$5,'Enrollment payment',$6)`,
-          [invRes.rows[0].id, user.id, paidNow, payment_method, generateReceiptNumber(gymToday()), req.user.id]
+             invoice_id, member_id, amount, payment_method, receipt_number, reference_note, recorded_by, gym_id
+           ) VALUES ($1,$2,$3,$4,$5,'Enrollment payment',$6,$7)`,
+          [invRes.rows[0].id, user.id, paidNow, payment_method, generateReceiptNumber(gymToday()), req.user.id, req.user.gym_id]
         );
       }
     }
@@ -369,11 +365,27 @@ router.put('/:id', async (req, res) => {
     await client.query('BEGIN');
     inTransaction = true;
 
-    const exists = await client.query("SELECT 1 FROM users WHERE id = $1 AND role = 'customer' FOR UPDATE", [memberId]);
+    const exists = await client.query(
+      "SELECT 1 FROM users WHERE id = $1 AND role = 'customer' AND gym_id = $2 FOR UPDATE",
+      [memberId, req.user.gym_id]
+    );
     if (exists.rowCount === 0) {
       await client.query('ROLLBACK');
       inTransaction = false;
       return res.status(404).json({ error: 'Member not found' });
+    }
+
+    // A plan can only be assigned from this gym's own plans.
+    if (body.plan_id !== undefined && body.plan_id !== null && body.plan_id !== '') {
+      const planOk = await client.query('SELECT 1 FROM membership_plans WHERE id = $1 AND gym_id = $2', [
+        parseId(body.plan_id),
+        req.user.gym_id,
+      ]);
+      if (planOk.rowCount === 0) {
+        await client.query('ROLLBACK');
+        inTransaction = false;
+        return res.status(400).json({ error: 'Selected membership plan does not exist' });
+      }
     }
 
     if ('phone' in body && (await phoneTaken(client, body.phone, memberId))) {

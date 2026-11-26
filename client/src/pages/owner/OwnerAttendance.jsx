@@ -103,9 +103,6 @@ export default function OwnerAttendance() {
         <h2 className="text-2xl font-extrabold tracking-tight text-white">
           Attendance <span className="font-normal italic text-white/60">Management</span>
         </h2>
-        <p className="text-xs sm:text-sm text-white/55">
-          Track member In-Time, Out-Time, and total workout duration
-        </p>
       </div>
 
       {error && (

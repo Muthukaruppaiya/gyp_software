@@ -1,8 +1,10 @@
 import express from 'express';
+import { parseLatitude, parseLongitude, MIN_RADIUS_M, MAX_RADIUS_M } from '../utils/geo.js';
 import bcrypt from 'bcryptjs';
 import { query } from '../db/pool.js';
 import { authenticate, requireRole } from '../middleware/auth.js';
 import { phoneKey, PHONE_KEY_SQL } from '../utils/codes.js';
+import { getPublicGym, publicGym } from '../utils/gym.js';
 
 const router = express.Router();
 
@@ -16,8 +18,7 @@ router.get('/', authenticate, async (req, res) => {
     const user = userRes.rows[0];
     if (!user) return res.status(404).json({ error: 'User not found' });
 
-    const gymRes = await query('SELECT * FROM gym_settings ORDER BY id ASC LIMIT 1');
-    const gym = gymRes.rows[0] || null;
+    const gym = await getPublicGym({ query }, req.user.gym_id);
 
     let profile = null;
     if (user.role === 'customer') {
@@ -115,6 +116,21 @@ router.put('/', authenticate, async (req, res) => {
       }
     }
 
+    // A gym owner activating with the super admin's access code must set email + password.
+    let ownerActivating = false;
+    if (req.user.role === 'owner') {
+      const g = await query('SELECT owner_onboarded FROM gym_settings WHERE id = $1', [req.user.gym_id]);
+      if (g.rowCount > 0 && g.rows[0].owner_onboarded === false) {
+        ownerActivating = true;
+        if (!email || !email.trim()) {
+          return res.status(400).json({ error: 'Please enter your email address to activate your account' });
+        }
+        if (!password || password.length < 6) {
+          return res.status(400).json({ error: 'Please set a login password (min 6 characters)' });
+        }
+      }
+    }
+
     let passwordHashClause = '';
     const userParams = [full_name.trim(), phone || null, email ? email.trim().toLowerCase() : null];
     if (password && password.length >= 6) {
@@ -177,11 +193,20 @@ router.put('/', authenticate, async (req, res) => {
       profile = profRes.rows[0] || null;
     }
 
+    if (ownerActivating) {
+      // The one-time code is spent: clear it so it can never be used again.
+      await query('UPDATE gym_settings SET owner_onboarded = TRUE, onboarding_code = NULL, updated_at = NOW() WHERE id = $1', [
+        req.user.gym_id,
+      ]);
+    }
+
     res.json({
-      message: isCompletingOnboarding
+      message: ownerActivating
+        ? 'Account activated! Welcome aboard.'
+        : isCompletingOnboarding
         ? 'Onboarding profile completed! Welcome to the gym.'
         : 'Profile updated successfully',
-      onboardingCompletedNow: isCompletingOnboarding,
+      onboardingCompletedNow: isCompletingOnboarding || ownerActivating,
       user: userRes.rows[0],
       profile,
     });
@@ -247,31 +272,44 @@ router.put('/gym', authenticate, requireRole('owner'), async (req, res) => {
       values.logo_image = logo || null;
     }
 
+    // Gym location for the check-in geofence. Both coordinates or neither.
+    if ('latitude' in body || 'longitude' in body) {
+      const blank = (v) => v === null || v === undefined || String(v).trim() === '';
+      if (blank(body.latitude) && blank(body.longitude)) {
+        values.latitude = null;
+        values.longitude = null;
+      } else {
+        const lat = parseLatitude(body.latitude);
+        const lng = parseLongitude(body.longitude);
+        if (lat === null || lng === null) {
+          return res.status(400).json({ error: 'Enter a valid latitude (-90 to 90) and longitude (-180 to 180)' });
+        }
+        values.latitude = lat;
+        values.longitude = lng;
+      }
+    }
+    if ('geofence_radius_m' in body) {
+      const r = Number(body.geofence_radius_m);
+      if (!Number.isInteger(r) || r < MIN_RADIUS_M || r > MAX_RADIUS_M) {
+        return res.status(400).json({ error: `Check-in radius must be ${MIN_RADIUS_M}–${MAX_RADIUS_M} metres` });
+      }
+      values.geofence_radius_m = r;
+    }
+
     const columns = Object.keys(values);
     const params = columns.map((c) => values[c]);
 
-    const existing = await query('SELECT id FROM gym_settings ORDER BY id ASC LIMIT 1');
-    let result;
-    if (existing.rowCount === 0) {
-      params.push(req.user.id);
-      result = await query(
-        `INSERT INTO gym_settings (${columns.join(', ')}, owner_user_id)
-         VALUES (${columns.map((_, i) => `$${i + 1}`).join(', ')}, $${params.length})
-         RETURNING *`,
-        params
-      );
-    } else {
-      params.push(existing.rows[0].id);
-      result = await query(
-        `UPDATE gym_settings
-         SET ${columns.map((c, i) => `${c} = $${i + 1}`).join(', ')}, updated_at = NOW()
-         WHERE id = $${params.length}
-         RETURNING *`,
-        params
-      );
-    }
+    params.push(req.user.gym_id);
+    const result = await query(
+      `UPDATE gym_settings
+       SET ${columns.map((c, i) => `${c} = $${i + 1}`).join(', ')}, updated_at = NOW()
+       WHERE id = $${params.length}
+       RETURNING *`,
+      params
+    );
+    if (result.rowCount === 0) return res.status(404).json({ error: 'Gym not found' });
 
-    res.json({ message: 'Gym settings updated successfully', gym: result.rows[0] });
+    res.json({ message: 'Gym settings updated successfully', gym: publicGym(result.rows[0]) });
   } catch (err) {
     console.error('Update gym settings error:', err);
     res.status(500).json({ error: 'Failed to update gym settings' });

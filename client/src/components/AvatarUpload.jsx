@@ -88,9 +88,6 @@ export default function AvatarUpload({ value, name = 'Member', onChange }) {
             </button>
           )}
         </div>
-        <p className="text-[11px] text-white/55">
-          Upload your profile picture (JPG, PNG, or WebP). Automatically optimized for iOS/Web display.
-        </p>
       </div>
     </div>
   );

@@ -122,10 +122,6 @@ export default function CustomerProfile() {
           </div>
           <div>
             <p className="text-sm font-extrabold text-white">Complete Your First-Time Onboarding Profile</p>
-            <p className="text-xs text-white/75 mt-0.5 leading-relaxed">
-              Your access code was verified! Fill in your email, set a password for future logins, upload your photo,
-              and save your fitness details to unlock the normal member dashboard.
-            </p>
           </div>
         </div>
       )}
@@ -136,9 +132,6 @@ export default function CustomerProfile() {
             {isOnboarding ? 'Complete Your' : 'My'}{' '}
             <span className="font-normal italic text-white/60">Profile</span>
           </h2>
-          <p className="text-xs sm:text-sm text-white/55">
-            Maintain your profile photo, personal details, emergency contacts, and fitness metrics
-          </p>
         </div>
         {memberCode && (
           <span className="self-start rounded-full glass-chip px-4 py-1.5 text-xs font-mono font-bold text-[#FF9A5A]">

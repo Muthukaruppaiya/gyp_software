@@ -1,12 +1,13 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { LogIn, LogOut, Clock, CalendarCheck, CreditCard, Flame, ArrowRight, Timer, AlertTriangle } from 'lucide-react';
+import { LogIn, LogOut, Clock, CalendarCheck, CreditCard, Flame, ArrowRight, Timer, AlertTriangle, MapPin } from 'lucide-react';
 import { apiFetch, formatCurrency, formatDate, formatDuration, formatTime } from '../../api/client';
 import { useAuth } from '../../context/AuthContext';
 import { useTransactionPopup } from '../../context/TransactionPopupContext';
 import StatCard from '../../components/StatCard';
 import StatusBadge from '../../components/StatusBadge';
 import MembershipCountdown from '../../components/MembershipCountdown';
+import { getCurrentPosition, gymLocationSet } from '../../utils/geo';
 
 export default function CustomerDashboard() {
   const { user, profile, gym, refreshSession } = useAuth();
@@ -18,6 +19,7 @@ export default function CustomerDashboard() {
   const [invoices, setInvoices] = useState([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
+  const [busyLabel, setBusyLabel] = useState('');
   const [nowTick, setNowTick] = useState(Date.now());
   const [error, setError] = useState('');
 
@@ -50,13 +52,22 @@ export default function CustomerDashboard() {
     return () => clearInterval(id);
   }, [statusData?.activeSession]);
 
+  // Check-in/out only works at the gym: read GPS first, the server verifies the distance.
+  async function locate() {
+    setBusyLabel('Locating...');
+    const pos = await getCurrentPosition();
+    setBusyLabel('');
+    return pos;
+  }
+
   async function handleCheckIn() {
     setBusy(true);
     setError('');
     try {
+      const pos = await locate();
       const res = await apiFetch('/attendance/check-in', {
         method: 'POST',
-        body: JSON.stringify({ notes: 'Mobile / Web self check-in' }),
+        body: JSON.stringify({ notes: 'Self check-in', ...pos }),
       });
       showSuccess({
         title: 'Checked In Successfully!',
@@ -68,6 +79,7 @@ export default function CustomerDashboard() {
       setError(err.message);
     } finally {
       setBusy(false);
+      setBusyLabel('');
     }
   }
 
@@ -75,9 +87,10 @@ export default function CustomerDashboard() {
     setBusy(true);
     setError('');
     try {
+      const pos = await locate();
       const res = await apiFetch('/attendance/check-out', {
         method: 'POST',
-        body: JSON.stringify({ attendanceId: statusData?.activeSession?.id }),
+        body: JSON.stringify({ attendanceId: statusData?.activeSession?.id, ...pos }),
       });
       showSuccess({
         title: 'Checked Out Successfully!',
@@ -93,6 +106,7 @@ export default function CustomerDashboard() {
       setError(err.message);
     } finally {
       setBusy(false);
+      setBusyLabel('');
     }
   }
 
@@ -193,9 +207,7 @@ export default function CustomerDashboard() {
               You have not checked out for your last {missed.streak} visits
             </p>
             <p className="mt-0.5 text-xs text-amber-100/75 leading-relaxed">
-              You are continuously not checking out, so the system closed those sessions automatically at 12:00 AM and
-              your workout time is not accurate. Please tap <span className="font-bold">Check Out Now</span> before you
-              leave the gym.
+              Tap <span className="font-bold">Check Out</span> before you leave.
             </p>
           </div>
         </div>
@@ -236,11 +248,12 @@ export default function CustomerDashboard() {
                 ? `Checked In since ${formatTime(activeSession.check_in_time)}`
                 : 'Start Your Gym Session'}
             </h3>
-            <p className="text-xs sm:text-sm text-white/70 max-w-lg">
-              {activeSession
-                ? 'Tap Check Out when you wrap up to save your Out-Time and total duration.'
-                : 'Tap Check In Now to record your gym In-Time and start tracking your workout.'}
-            </p>
+            {gymLocationSet(gym) && (
+              <p className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-white/60">
+                <MapPin className="h-3.5 w-3.5 text-[#FF8F4A]" />
+                At the gym only
+              </p>
+            )}
           </div>
 
           {activeSession ? (
@@ -250,7 +263,7 @@ export default function CustomerDashboard() {
               className="w-full sm:w-auto inline-flex items-center justify-center gap-2 rounded-full bg-[#E56717] px-7 py-4 text-sm font-extrabold text-white hover:bg-[#C8560F] transition-all disabled:opacity-50 shadow-xl shadow-[#E56717]/35"
             >
               <LogOut className="h-5 w-5" />
-              {busy ? 'Updating...' : 'Check Out Now'}
+              {busy ? busyLabel || 'Updating...' : 'Check Out Now'}
             </button>
           ) : (
             <button
@@ -259,7 +272,7 @@ export default function CustomerDashboard() {
               className="w-full sm:w-auto inline-flex items-center justify-center gap-2 rounded-full bg-white px-7 py-4 text-sm font-extrabold text-[#111317] hover:bg-[#FFD2B3] transition-all disabled:opacity-50 shadow-xl"
             >
               <LogIn className="h-5 w-5 text-[#E56717]" />
-              {busy ? 'Checking In...' : 'Check In Now'}
+              {busy ? busyLabel || 'Checking In...' : 'Check In Now'}
             </button>
           )}
         </div>
@@ -344,7 +357,6 @@ export default function CustomerDashboard() {
           >
             <div>
               <p className="text-sm font-bold text-white">Maintain My Profile</p>
-              <p className="text-xs text-white/55">Update photo, metrics & goals</p>
             </div>
             <ArrowRight className="h-4 w-4 text-[#E56717]" />
           </Link>
@@ -354,7 +366,6 @@ export default function CustomerDashboard() {
           >
             <div>
               <p className="text-sm font-bold text-white">Fees & Payment Receipts</p>
-              <p className="text-xs text-white/55">View dues & download receipts</p>
             </div>
             <ArrowRight className="h-4 w-4 text-[#E56717]" />
           </Link>

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { NavLink, useNavigate } from 'react-router-dom';
+import { NavLink, useLocation, useNavigate } from 'react-router-dom';
 import {
   Dumbbell,
   LayoutDashboard,
@@ -12,6 +12,9 @@ import {
   ShieldCheck,
   Flame,
   Settings,
+  Building2,
+  Globe2,
+  Rocket,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import MembershipReminderModal from './MembershipReminderModal';
@@ -20,20 +23,27 @@ import { consumeReminderFlag, membershipCountdown, needsRenewalReminder } from '
 export default function Layout({ children }) {
   const { user, profile, gym, logout } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
 
   const isOwner = user?.role === 'owner';
-  const onboardingLocked = !isOwner && profile && profile.onboarding_completed === false;
+  const isAdmin = user?.role === 'superadmin';
+  const ownerSetup = isOwner && gym?.owner_onboarded === false;
+  const onboardingLocked = user?.role === 'customer' && profile && profile.onboarding_completed === false;
 
   // Renewal popup: once per sign-in, when ≤ 3 days remain or the membership has expired.
   const [reminder, setReminder] = useState(null);
   useEffect(() => {
-    if (isOwner || !profile || onboardingLocked) return;
+    if (user?.role !== 'customer' || !profile || onboardingLocked) return;
     if (!consumeReminderFlag()) return;
     const countdown = membershipCountdown(profile);
     if (needsRenewalReminder(countdown)) setReminder(countdown);
-  }, [isOwner, profile, onboardingLocked]);
+  }, [user?.role, profile, onboardingLocked]);
 
-  const navItems = isOwner
+  const navItems = isAdmin
+    ? [{ to: '/admin', label: 'Gyms', icon: Building2 }]
+    : ownerSetup
+    ? [{ to: '/owner/setup', label: 'Activate', icon: Rocket }]
+    : isOwner
     ? [
         { to: '/owner', label: 'Overview', icon: LayoutDashboard, end: true },
         { to: '/owner/attendance', label: 'Attendance', icon: Clock },
@@ -82,11 +92,11 @@ export default function Layout({ children }) {
             )}
             <div className="min-w-0">
               <h1 className="text-sm font-extrabold tracking-tight text-white truncate">
-                {gym?.gym_name || 'IronPulse'}
+                {isAdmin ? 'IronPulse Platform' : gym?.gym_name || 'IronPulse'}
               </h1>
               <p className="text-[11px] font-semibold text-[#FF8F4A] flex items-center gap-1">
-                {isOwner ? <ShieldCheck className="h-3 w-3" /> : <Flame className="h-3 w-3" />}
-                {isOwner ? 'Owner Console' : 'Member App'}
+                {isAdmin ? <Globe2 className="h-3 w-3" /> : isOwner ? <ShieldCheck className="h-3 w-3" /> : <Flame className="h-3 w-3" />}
+                {isAdmin ? 'Super Admin' : isOwner ? 'Owner Console' : 'Member App'}
               </p>
             </div>
           </div>
@@ -162,12 +172,9 @@ export default function Layout({ children }) {
             </div>
           )}
           <div className="min-w-0">
-            <p className="text-xs font-semibold text-white/55 truncate">
-              Hi, {user?.full_name?.split(' ')[0]}
-            </p>
+            <p className="text-[11px] font-semibold text-white/55 truncate">{isAdmin ? 'Super Admin' : isOwner ? 'Owner' : 'Welcome back'}</p>
             <p className="text-sm font-extrabold text-white truncate flex items-center gap-1">
-              {isOwner ? gym?.gym_name || 'Owner Console' : 'Get Ready'}
-              <Flame className="h-3.5 w-3.5 text-[#E56717]" />
+              {isAdmin ? 'IronPulse Platform' : isOwner ? gym?.gym_name || 'IronPulse' : user?.full_name?.split(' ')[0]}
             </p>
           </div>
         </div>
@@ -182,11 +189,11 @@ export default function Layout({ children }) {
 
       {/* Main Content */}
       <main className="flex-1 md:pl-68 pb-28 md:pb-8">
-        <div className="mx-auto max-w-7xl px-4 py-5 sm:px-6 lg:px-8">{children}</div>
+        <div key={location.pathname} className="page-enter mx-auto max-w-7xl px-4 py-5 sm:px-6 lg:px-8">{children}</div>
       </main>
 
       {/* Mobile Floating Apple Liquid Glass Bottom Tab Capsule */}
-      <div className="fixed bottom-3 inset-x-0 z-30 flex justify-center md:hidden px-4 pointer-events-none">
+      <div className="fixed bottom-[max(0.75rem,env(safe-area-inset-bottom))] inset-x-0 z-30 flex justify-center md:hidden px-4 pointer-events-none">
         <nav className="pointer-events-auto glass-pill rounded-full px-2 py-1.5 flex items-center gap-1 shadow-xl">
           {navItems.map((item) => {
             const Icon = item.icon;
@@ -198,14 +205,14 @@ export default function Layout({ children }) {
                 className={({ isActive }) =>
                   `flex items-center gap-1.5 rounded-full px-3 py-2.5 text-xs font-bold transition-all ${
                     isActive
-                      ? 'glass-chip text-white shadow-md'
+                      ? 'btn-papaya text-white'
                       : 'text-white/60 hover:text-white'
                   }`
                 }
               >
                 {({ isActive }) => (
                   <>
-                    <Icon className={`h-4 w-4 shrink-0 ${isActive ? 'text-[#E56717]' : ''}`} />
+                    <Icon className="h-4 w-4 shrink-0" />
                     {isActive && <span className="text-[11px]">{item.label}</span>}
                   </>
                 )}

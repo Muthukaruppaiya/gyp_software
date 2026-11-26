@@ -1,6 +1,7 @@
 import express from 'express';
 import { query } from '../db/pool.js';
-import { authenticate } from '../middleware/auth.js';
+import { authenticate, requireGymUser } from '../middleware/auth.js';
+import { checkGeofence } from '../utils/geo.js';
 import {
   autoCheckoutStaleSessions,
   getMissedCheckoutStreak,
@@ -9,7 +10,20 @@ import {
 
 const router = express.Router();
 
-router.use(authenticate);
+/** Members may only check themselves in/out at the gym. Owner desk actions skip this. */
+async function memberGeofence(req, res) {
+  if (req.user.role !== 'customer') return { ok: true, distance: null };
+  const gymRes = await query('SELECT latitude, longitude, geofence_radius_m FROM gym_settings WHERE id = $1', [
+    req.user.gym_id,
+  ]);
+  const result = checkGeofence(gymRes.rows[0], req.body);
+  if (!result.ok) {
+    res.status(result.status).json({ error: result.error, code: result.code, distance: result.distance });
+  }
+  return result;
+}
+
+router.use(authenticate, requireGymUser);
 
 // GET /api/attendance/status
 router.get('/status', async (req, res) => {
@@ -60,13 +74,15 @@ router.get('/status', async (req, res) => {
          JOIN users u ON u.id = al.member_id
          LEFT JOIN member_profiles mp ON mp.user_id = u.id
          LEFT JOIN membership_plans pl ON pl.id = mp.plan_id
-         WHERE al.check_out_time IS NULL
-         ORDER BY al.check_in_time DESC`
+         WHERE al.check_out_time IS NULL AND al.gym_id = $1
+         ORDER BY al.check_in_time DESC`,
+        [req.user.gym_id]
       ),
       query(
         `SELECT COUNT(*)::int AS total_today
          FROM attendance_logs
-         WHERE check_in_time::date = CURRENT_DATE`
+         WHERE check_in_time::date = CURRENT_DATE AND gym_id = $1`,
+        [req.user.gym_id]
       ),
     ]);
 
@@ -84,8 +100,8 @@ router.get('/status', async (req, res) => {
 router.get('/', async (req, res) => {
   try {
     const { from, to, memberId, status, limit = 100 } = req.query;
-    const params = [];
-    const clauses = [];
+    const params = [req.user.gym_id];
+    const clauses = ['al.gym_id = $1'];
 
     if (req.user.role === 'customer') {
       params.push(req.user.id);
@@ -146,8 +162,8 @@ router.post('/check-in', async (req, res) => {
               (mp.plan_end_date IS NOT NULL AND mp.plan_end_date < CURRENT_DATE) AS plan_lapsed
        FROM users u
        LEFT JOIN member_profiles mp ON mp.user_id = u.id
-       WHERE u.id = $1 AND u.role = 'customer'`,
-      [targetMemberId]
+       WHERE u.id = $1 AND u.role = 'customer' AND u.gym_id = $2`,
+      [targetMemberId, req.user.gym_id]
     );
     if (memRes.rowCount === 0) {
       return res.status(404).json({ error: 'Member not found' });
@@ -168,6 +184,9 @@ router.post('/check-in', async (req, res) => {
       });
     }
 
+    const fence = await memberGeofence(req, res);
+    if (!fence.ok) return;
+
     // Check for existing open session
     const openRes = await query(
       'SELECT id, check_in_time FROM attendance_logs WHERE member_id = $1 AND check_out_time IS NULL',
@@ -181,10 +200,10 @@ router.post('/check-in', async (req, res) => {
     }
 
     const { rows } = await query(
-      `INSERT INTO attendance_logs (member_id, check_in_time, marked_by, notes)
-       VALUES ($1, NOW(), $2, $3)
+      `INSERT INTO attendance_logs (member_id, check_in_time, marked_by, notes, check_in_distance_m, gym_id)
+       VALUES ($1, NOW(), $2, $3, $4, $5)
        RETURNING *`,
-      [targetMemberId, markedBy, notes]
+      [targetMemberId, markedBy, notes, fence.distance, req.user.gym_id]
     );
 
     res.status(201).json({
@@ -213,17 +232,17 @@ router.post('/check-out', async (req, res) => {
     if (attendanceId) {
       const sql =
         req.user.role === 'owner'
-          ? 'SELECT * FROM attendance_logs WHERE id = $1 AND check_out_time IS NULL'
+          ? 'SELECT * FROM attendance_logs WHERE id = $1 AND gym_id = $2 AND check_out_time IS NULL'
           : 'SELECT * FROM attendance_logs WHERE id = $1 AND member_id = $2 AND check_out_time IS NULL';
-      const params = req.user.role === 'owner' ? [attendanceId] : [attendanceId, req.user.id];
+      const params = req.user.role === 'owner' ? [attendanceId, req.user.gym_id] : [attendanceId, req.user.id];
       openLogRes = await query(sql, params);
     } else {
       const targetMemberId = req.user.role === 'owner' && memberId ? Number(memberId) : req.user.id;
       openLogRes = await query(
         `SELECT * FROM attendance_logs
-         WHERE member_id = $1 AND check_out_time IS NULL
+         WHERE member_id = $1 AND gym_id = $2 AND check_out_time IS NULL
          ORDER BY check_in_time DESC LIMIT 1`,
-        [targetMemberId]
+        [targetMemberId, req.user.gym_id]
       );
     }
 
@@ -231,14 +250,18 @@ router.post('/check-out', async (req, res) => {
       return res.status(404).json({ error: 'No active check-in session found to check out' });
     }
 
+    const fence = await memberGeofence(req, res);
+    if (!fence.ok) return;
+
     const logId = openLogRes.rows[0].id;
     const { rows } = await query(
       `UPDATE attendance_logs
        SET check_out_time = NOW(),
-           notes = COALESCE($1, notes)
+           notes = COALESCE($1, notes),
+           check_out_distance_m = $3
        WHERE id = $2 AND check_out_time IS NULL
        RETURNING *`,
-      [notes ? String(notes).slice(0, 250) : null, logId]
+      [notes ? String(notes).slice(0, 250) : null, logId, fence.distance]
     );
     if (rows.length === 0) {
       // Closed by a concurrent request (double tap) or the midnight auto-checkout in between.

@@ -361,7 +361,6 @@ export default function OwnerInsights() {
         </span>
         <div>
           <h2 className="text-xl sm:text-2xl font-extrabold tracking-tight text-white">{view.title}</h2>
-          <p className="text-xs text-white/55">{view.subtitle}</p>
         </div>
       </div>
 

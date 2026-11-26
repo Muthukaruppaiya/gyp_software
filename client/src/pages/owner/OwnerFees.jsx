@@ -145,9 +145,6 @@ export default function OwnerFees() {
           <h2 className="text-2xl font-extrabold tracking-tight text-white">
             Fees & <span className="font-normal italic text-white/60">Membership Plans</span>
           </h2>
-          <p className="text-xs sm:text-sm text-white/55">
-            Track pending dues, record fee payments, and configure membership packages
-          </p>
         </div>
         <div className="flex flex-wrap gap-2">
           <Link
@@ -342,12 +339,6 @@ export default function OwnerFees() {
         </div>
       ) : (
         <div className="space-y-3">
-          <div className="flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-xs text-white/60">
-            <span>Plan prices are set by the owner in Settings. First-month price applies to a member's joining bill only.</span>
-            <Link to="/owner/profile?tab=pricing" className="font-bold text-[#FF8F4A] hover:underline">
-              Edit pricing →
-            </Link>
-          </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
             {plans.map((pl) => {
               const hasFirst = pl.first_month_price !== null && pl.first_month_price !== undefined;
@@ -483,15 +474,13 @@ export default function OwnerFees() {
             </select>
             {invForm.plan_id && quote && (
               <p
-                className={`mt-1.5 rounded-xl px-3 py-2 text-[11px] font-semibold ${
+                className={`mt-1.5 inline-flex rounded-full px-3 py-1 text-[11px] font-bold ${
                   quote.tier === 'first'
                     ? 'bg-[#E56717]/12 text-[#FFB98A] border border-[#E56717]/30'
                     : 'bg-white/6 text-white/65 border border-white/10'
                 }`}
               >
-                {quote.tier === 'first'
-                  ? `First-month (joining) price applied — this is the member's first plan bill. Renewals will be ${formatCurrency(quote.regular_price, currency)}.`
-                  : 'Regular (renewal) price applied.'}
+                {quote.tier === 'first' ? 'First-month price' : 'Regular price'}
               </p>
             )}
           </div>

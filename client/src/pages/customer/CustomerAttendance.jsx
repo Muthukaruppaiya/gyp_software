@@ -28,9 +28,6 @@ export default function CustomerAttendance() {
           <h2 className="text-2xl font-extrabold tracking-tight text-white">
             My Attendance <span className="font-normal italic text-white/60">History</span>
           </h2>
-          <p className="text-xs sm:text-sm text-white/55">
-            Complete record of your gym In-Time, Out-Time, and workout duration
-          </p>
         </div>
         <div className="inline-flex items-center gap-2 rounded-full glass-chip px-4 py-2 text-xs text-white shadow-sm">
           <Clock className="h-4 w-4 text-[#E56717]" />

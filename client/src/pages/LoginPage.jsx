@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Dumbbell, ShieldCheck, User, ArrowRight, KeyRound, Check, ChevronRight, Flame } from 'lucide-react';
+import { Dumbbell, ShieldCheck, User, ArrowRight, KeyRound, Mail, Lock, Eye, EyeOff, Loader2, Globe2 } from 'lucide-react';
+import { homePath } from '../utils/home';
 import { useAuth } from '../context/AuthContext';
 import { useTransactionPopup } from '../context/TransactionPopupContext';
 
@@ -12,9 +13,15 @@ export default function LoginPage() {
   const [mode, setMode] = useState('login'); // 'login' | 'onboard'
   const [identifier, setIdentifier] = useState('');
   const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [onboardingCode, setOnboardingCode] = useState('');
   const [error, setError] = useState('');
   const [submitting, setSubmitting] = useState(false);
+
+  function switchMode(next) {
+    setMode(next);
+    setError('');
+  }
 
   async function handleSubmit(e) {
     e.preventDefault();
@@ -22,19 +29,18 @@ export default function LoginPage() {
     setSubmitting(true);
     try {
       if (mode === 'login') {
-        const { user, profile } = await login(identifier, password);
-        if (user.role === 'owner') {
-          navigate('/owner');
-        } else if (profile && profile.onboarding_completed === false) {
-          navigate('/member/profile');
-        } else {
-          navigate('/member');
-        }
+        const { user, profile, gym } = await login(identifier, password);
+        navigate(homePath(user, profile, gym));
       } else {
         const res = await onboardLogin(onboardingCode);
+        if (res.ownerOnboarding) {
+          // Gym owner activating the account the super admin created.
+          navigate('/owner/setup');
+          return;
+        }
         showSuccess({
-          title: 'Successfully Onboarded!',
-          message: `Welcome ${res.user.full_name}! Please complete your profile details and set your password to enter the portal.`,
+          title: 'Welcome!',
+          message: `Hi ${res.user.full_name}, finish your profile to continue.`,
           details: [
             { label: 'Member Code', value: res.profile?.member_code || '—' },
             { label: 'Phone', value: res.user?.phone || '—' },
@@ -53,8 +59,8 @@ export default function LoginPage() {
     setError('');
     setSubmitting(true);
     try {
-      const { user } = await login(demoEmail, demoPassword);
-      navigate(user.role === 'owner' ? '/owner' : '/member');
+      const { user, profile, gym } = await login(demoEmail, demoPassword);
+      navigate(homePath(user, profile, gym));
     } catch (err) {
       setError(err.message || 'Demo login failed');
     } finally {
@@ -63,194 +69,226 @@ export default function LoginPage() {
   }
 
   return (
-    <div className="min-h-screen flex flex-col lg:flex-row p-3 sm:p-5 lg:p-7 gap-5 max-w-[1440px] mx-auto">
-      {/* Left Apple-Style Hero Card with Athletic Image & Liquid Glass Overlay */}
-      <div className="relative overflow-hidden lg:w-1/2 min-h-[380px] lg:min-h-[680px] rounded-[34px] border border-white/15 shadow-[0_24px_60px_-18px_rgba(17,19,23,0.22)] flex flex-col justify-between bg-[#E56717]/20">
+    <div className="relative h-[100dvh] overflow-hidden lg:flex lg:gap-6 lg:p-6 max-w-[1440px] mx-auto">
+      {/* Hero: full-bleed background on mobile, left panel on desktop */}
+      <div className="absolute inset-0 lg:relative lg:inset-auto lg:w-1/2 lg:rounded-[34px] overflow-hidden lg:border lg:border-white/15 lg:shadow-[0_24px_60px_-18px_rgba(0,0,0,0.6)]">
         <img
           src="/images/hero-athlete.jpg"
-          alt="Athletic studio training"
-          className="absolute inset-0 h-full w-full object-cover object-top"
+          alt=""
+          className="absolute inset-0 h-full w-full object-cover object-[center_20%] login-hero-zoom"
         />
-        <div className="absolute inset-0 bg-gradient-to-t from-[#111317]/90 via-[#111317]/25 to-[#E56717]/25" />
+        <div className="absolute inset-0 bg-gradient-to-b from-[#08080a]/30 via-[#08080a]/45 to-[#08080a] lg:to-[#08080a]/85" />
+        <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top_right,rgba(229,103,23,0.35),transparent_60%)]" />
 
-        {/* Top Bar */}
-        <div className="relative z-10 flex items-center justify-between p-6 sm:p-8">
-          <div className="flex items-center gap-2.5 glass-pill rounded-full px-3.5 py-2">
-            <div className="flex h-7 w-7 items-center justify-center rounded-full glass-chip text-white">
-              <Dumbbell className="h-3.5 w-3.5 text-[#E56717]" />
-            </div>
-            <span className="text-xs font-extrabold tracking-tight text-white">IronPulse Studio</span>
-          </div>
-
-          <div className="flex items-center gap-1.5">
-            <span className="h-1.5 w-1.5 rounded-full bg-white/40" />
-            <span className="h-1.5 w-1.5 rounded-full bg-white/40" />
-            <span className="h-1.5 w-6 rounded-full bg-[#E56717]" />
-          </div>
-        </div>
-
-        {/* Bottom Editorial Copy + Liquid Glass Pill */}
-        <div className="relative z-10 p-6 sm:p-8 lg:p-10 space-y-5">
-          <div className="inline-flex items-center gap-1.5 rounded-full bg-[#E56717] px-3 py-1 text-[11px] font-bold text-white shadow-lg shadow-[#E56717]/40">
-            <Flame className="h-3.5 w-3.5" />
-            Apple-Inspired Liquid Glass Suite
-          </div>
-
-          <h2 className="text-3xl sm:text-5xl font-extrabold tracking-tight text-white leading-[1.08]">
-            Workout <span className="font-normal italic text-[#FFD2B3]">Get Better As You</span>
-          </h2>
-          <p className="text-xs sm:text-sm text-white/80 max-w-md leading-relaxed">
-            Seamless gym attendance tracking (In-Time & Out-Time), fee collections, interactive analytics, and
-            one-code client onboarding for desktop and mobile.
-          </p>
-
-          <div className="inline-flex items-center gap-3 rounded-full bg-white/25 backdrop-blur-2xl border border-white/40 p-1.5 pr-4">
-            <span className="flex h-10 w-10 items-center justify-center rounded-full glass-chip text-white">
-              <Check className="h-4 w-4 text-[#E56717]" strokeWidth={3} />
-            </span>
-            <span className="text-xs font-semibold text-white">Ready for Owner & Member Access</span>
-            <ChevronRight className="h-4 w-4 text-white/75" />
-          </div>
+        <div className="relative z-10 hidden lg:flex h-full flex-col items-start justify-between p-10">
+          <Brand />
+          <Headline large />
         </div>
       </div>
 
-      {/* Right Liquid Glass Auth Panel */}
-      <div className="flex-1 flex items-center justify-center p-2 sm:p-6">
-        <div className="w-full max-w-md space-y-5">
-          {/* Quick Demo Buttons */}
-          <div className="glass-card p-5 space-y-3">
-            <p className="text-[11px] font-bold uppercase tracking-wider text-white/55">
-              1-Tap Proposal Demo Access
-            </p>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-              <button
-                type="button"
-                disabled={submitting}
-                onClick={() => quickDemoLogin('owner@ironpulse.fit', 'owner123')}
-                className="flex items-center justify-center gap-2 rounded-full glass-chip px-4 py-3 text-xs font-bold text-white hover:bg-white/20 transition-all disabled:opacity-50"
-              >
-                <ShieldCheck className="h-4 w-4 text-[#E56717]" />
-                Gym Owner Login
-              </button>
-              <button
-                type="button"
-                disabled={submitting}
-                onClick={() => quickDemoLogin('arjun@ironpulse.fit', 'member123')}
-                className="flex items-center justify-center gap-2 rounded-full bg-[#E56717] px-4 py-3 text-xs font-bold text-white hover:bg-[#C8560F] shadow-md shadow-[#E56717]/30 transition-all disabled:opacity-50"
-              >
-                <User className="h-4 w-4" />
-                Gym Customer Login
-              </button>
-            </div>
+      {/* Auth column */}
+      <div className="relative z-10 flex h-full flex-col px-4 pt-[max(1rem,env(safe-area-inset-top))] pb-[max(1rem,env(safe-area-inset-bottom))] sm:px-6 lg:flex-1 lg:items-center lg:justify-center lg:p-6">
+        <div className="lg:hidden">
+          <Brand />
+        </div>
+
+        <div className="flex flex-1 flex-col justify-end gap-5 lg:flex-none lg:w-full lg:max-w-md">
+          <div className="lg:hidden [@media(max-height:600px)]:hidden">
+            <Headline />
           </div>
 
-          {/* Login / First-Time Onboarding Card */}
-          <div className="glass-card p-6 sm:p-7">
-            <div className="flex rounded-full bg-white/6 p-1 mb-6 border border-white/10">
-              <button
-                type="button"
-                onClick={() => {
-                  setMode('login');
-                  setError('');
-                }}
-                className={`flex-1 rounded-full py-2.5 text-xs font-bold transition-all ${
-                  mode === 'login'
-                    ? 'glass-chip text-white shadow-sm'
-                    : 'text-white/60 hover:text-white'
+          <div className="glass-card p-5 sm:p-7 login-rise">
+            <div className="hidden lg:block mb-6">
+              <h1 className="text-2xl font-extrabold tracking-tight text-white">
+                {mode === 'login' ? 'Welcome back' : 'Activate account'}
+              </h1>
+            </div>
+
+            {/* Mode switch with sliding indicator */}
+            <div className="relative grid grid-cols-2 rounded-full border border-white/10 bg-white/5 p-1 mb-5">
+              <span
+                aria-hidden
+                className={`absolute inset-y-1 left-1 w-[calc(50%-4px)] rounded-full btn-papaya transition-transform duration-300 ease-out ${
+                  mode === 'onboard' ? 'translate-x-full' : ''
                 }`}
-              >
+              />
+              <TabButton active={mode === 'login'} onClick={() => switchMode('login')}>
                 Sign In
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setMode('onboard');
-                  setError('');
-                }}
-                className={`flex-1 rounded-full py-2.5 text-xs font-bold transition-all ${
-                  mode === 'onboard'
-                    ? 'bg-[#E56717] text-white shadow-sm'
-                    : 'text-white/60 hover:text-white'
-                }`}
-              >
-                First-Time Code Login
-              </button>
+              </TabButton>
+              <TabButton active={mode === 'onboard'} onClick={() => switchMode('onboard')}>
+                Access Code
+              </TabButton>
             </div>
 
             {error && (
-              <div className="mb-4 rounded-2xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-xs font-medium text-rose-300">
+              <div
+                role="alert"
+                className="mb-4 rounded-2xl border border-rose-500/30 bg-rose-500/10 px-4 py-2.5 text-xs font-medium text-rose-300"
+              >
                 {error}
               </div>
             )}
 
-            <form onSubmit={handleSubmit} className="space-y-4">
+            <form onSubmit={handleSubmit} className="space-y-3">
               {mode === 'login' ? (
                 <>
-                  <div>
-                    <label className="block text-xs font-bold text-white/80 mb-1.5">
-                      Email or Phone Number
-                    </label>
-                    <input
-                      type="text"
-                      required
-                      value={identifier}
-                      onChange={(e) => setIdentifier(e.target.value)}
-                      placeholder="you@example.com or +91 98765 43210"
-                      className="input-glass w-full px-4 py-3 text-sm"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-bold text-white/80 mb-1.5">Password</label>
-                    <input
-                      type="password"
-                      required
-                      value={password}
-                      onChange={(e) => setPassword(e.target.value)}
-                      placeholder="••••••••"
-                      className="input-glass w-full px-4 py-3 text-sm"
-                    />
-                  </div>
+                  <IconInput
+                    icon={Mail}
+                    aria-label="Email or phone number"
+                    type="text"
+                    autoComplete="username"
+                    required
+                    value={identifier}
+                    onChange={(e) => setIdentifier(e.target.value)}
+                    placeholder="Email or phone"
+                  />
+                  <IconInput
+                    icon={Lock}
+                    aria-label="Password"
+                    type={showPassword ? 'text' : 'password'}
+                    autoComplete="current-password"
+                    required
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    placeholder="Password"
+                    trailing={
+                      <button
+                        type="button"
+                        onClick={() => setShowPassword((s) => !s)}
+                        aria-label={showPassword ? 'Hide password' : 'Show password'}
+                        className="absolute right-3 top-1/2 -translate-y-1/2 rounded-full p-1.5 text-white/50 hover:text-white hover:bg-white/10 transition-colors"
+                      >
+                        {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                      </button>
+                    }
+                  />
                 </>
               ) : (
-                <div className="space-y-3">
-                  <div className="rounded-2xl border border-[#E56717]/25 bg-[#E56717]/12 p-3.5 text-xs text-[#FFC9A6] leading-relaxed">
-                    Enter the unique <strong>Onboarding Code</strong> shared by the gym owner to activate your profile
-                    and upload your photo.
-                  </div>
-                  <div>
-                    <label className="block text-xs font-bold text-white/80 mb-1.5">Onboarding Access Code</label>
-                    <div className="relative">
-                      <KeyRound className="absolute left-3.5 top-3.5 h-4 w-4 text-[#E56717]" />
-                      <input
-                        type="text"
-                        required
-                        value={onboardingCode}
-                        onChange={(e) => setOnboardingCode(e.target.value.toUpperCase())}
-                        placeholder="e.g. KAR-210482"
-                        className="input-glass w-full pl-10 pr-4 py-3 text-sm font-mono tracking-wider uppercase"
-                      />
-                    </div>
-                  </div>
-                </div>
+                <IconInput
+                  icon={KeyRound}
+                  aria-label="Onboarding code"
+                  type="text"
+                  required
+                  autoCapitalize="characters"
+                  value={onboardingCode}
+                  onChange={(e) => setOnboardingCode(e.target.value.toUpperCase())}
+                  placeholder="KAR-210482"
+                  className="font-mono tracking-[0.2em] uppercase"
+                />
               )}
 
               <button
                 type="submit"
                 disabled={submitting}
-                className="flex w-full items-center justify-center gap-2 rounded-full btn-papaya px-5 py-3.5 text-sm font-bold text-white hover:brightness-110  transition-all disabled:opacity-60"
+                className="group flex w-full items-center justify-center gap-2 rounded-full btn-papaya px-5 py-3.5 text-sm font-bold hover:brightness-110 disabled:opacity-60"
               >
-                {submitting
-                  ? 'Please wait...'
-                  : mode === 'login'
-                  ? 'Sign In to Portal'
-                  : 'Activate & Onboard'}
-                <ArrowRight className="h-4 w-4 text-white" />
+                {submitting ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <>
+                    {mode === 'login' ? 'Sign In' : 'Activate'}
+                    <ArrowRight className="h-4 w-4 transition-transform group-hover:translate-x-0.5" />
+                  </>
+                )}
               </button>
             </form>
+
+            {/* Demo access */}
+            <div className="mt-5 flex items-center gap-3">
+              <span className="h-px flex-1 bg-white/10" />
+              <span className="text-[10px] font-bold uppercase tracking-[0.18em] text-white/40">Demo</span>
+              <span className="h-px flex-1 bg-white/10" />
+            </div>
+            <div className="mt-3 grid grid-cols-3 gap-2">
+              <DemoButton
+                icon={Globe2}
+                disabled={submitting}
+                onClick={() => quickDemoLogin('admin@ironpulse.fit', 'admin123')}
+              >
+                Admin
+              </DemoButton>
+              <DemoButton
+                icon={ShieldCheck}
+                disabled={submitting}
+                onClick={() => quickDemoLogin('owner@ironpulse.fit', 'owner123')}
+              >
+                Owner
+              </DemoButton>
+              <DemoButton
+                icon={User}
+                disabled={submitting}
+                onClick={() => quickDemoLogin('arjun@ironpulse.fit', 'member123')}
+              >
+                Member
+              </DemoButton>
+            </div>
           </div>
         </div>
       </div>
     </div>
+  );
+}
+
+function Brand() {
+  return (
+    <div className="inline-flex items-center gap-2.5 glass-pill rounded-full pl-1.5 pr-4 py-1.5">
+      <span className="flex h-8 w-8 items-center justify-center rounded-full btn-papaya">
+        <Dumbbell className="h-4 w-4" />
+      </span>
+      <span className="text-sm font-extrabold tracking-tight text-white">IronPulse</span>
+    </div>
+  );
+}
+
+function Headline({ large = false }) {
+  return (
+    <h2
+      className={`font-extrabold tracking-tight text-white leading-[1.02] ${
+        large ? 'text-6xl xl:text-7xl' : 'text-4xl sm:text-5xl'
+      }`}
+    >
+      Workout.
+      <br />
+      <span className="font-light italic bg-gradient-to-r from-[#FFD2B3] to-[#FF8F4A] bg-clip-text text-transparent">
+        Get better as you.
+      </span>
+    </h2>
+  );
+}
+
+function TabButton({ active, children, ...props }) {
+  return (
+    <button
+      type="button"
+      {...props}
+      className={`relative z-10 rounded-full py-2.5 text-xs font-bold transition-colors ${
+        active ? 'text-white' : 'text-white/55 hover:text-white'
+      }`}
+    >
+      {children}
+    </button>
+  );
+}
+
+function IconInput({ icon: Icon, trailing, className = '', ...props }) {
+  return (
+    <div className="relative">
+      <Icon className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-[#E56717]" />
+      <input {...props} className={`input-glass w-full pl-11 ${trailing ? 'pr-12' : 'pr-4'} py-3.5 text-sm ${className}`} />
+      {trailing}
+    </div>
+  );
+}
+
+function DemoButton({ icon: Icon, children, ...props }) {
+  return (
+    <button
+      type="button"
+      {...props}
+      className="flex items-center justify-center gap-1.5 rounded-full glass-chip px-2 py-2.5 text-xs font-bold text-white hover:bg-white/20 transition-all disabled:opacity-50"
+    >
+      <Icon className="h-4 w-4 text-[#FF8F4A]" />
+      {children}
+    </button>
   );
 }

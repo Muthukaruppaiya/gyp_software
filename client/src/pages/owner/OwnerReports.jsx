@@ -63,9 +63,6 @@ export default function OwnerReports() {
           <h2 className="text-2xl font-extrabold tracking-tight text-white">
             Analytics <span className="font-normal italic text-white/60">& Reports</span>
           </h2>
-          <p className="text-xs sm:text-sm text-white/55">
-            Attendance trends, peak hours, fee collection breakdown, and CSV exports
-          </p>
         </div>
         <div className="flex flex-wrap gap-2">
           <button

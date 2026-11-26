@@ -9,6 +9,8 @@ import membersRoutes from './routes/members.js';
 import attendanceRoutes from './routes/attendance.js';
 import feesRoutes from './routes/fees.js';
 import reportsRoutes from './routes/reports.js';
+import adminRoutes from './routes/admin.js';
+import { ensureSuperAdmin } from './db/superAdmin.js';
 import { ensureAttendanceSchema, startAutoCheckoutScheduler } from './jobs/autoCheckout.js';
 
 const app = express();
@@ -50,6 +52,7 @@ app.use('/api/members', membersRoutes);
 app.use('/api/attendance', attendanceRoutes);
 app.use('/api/fees', feesRoutes);
 app.use('/api/reports', reportsRoutes);
+app.use('/api/admin', adminRoutes);
 
 app.use((req, res) => {
   res.status(404).json({ error: `Route not found: ${req.method} ${req.originalUrl}` });
@@ -72,6 +75,7 @@ async function start() {
   try {
     // Apply schema upgrades before serving traffic so routes never hit a missing column/index.
     await ensureAttendanceSchema();
+    await ensureSuperAdmin((sql, params) => query(sql, params));
   } catch (err) {
     console.error('[startup] Schema migration failed:', err.message || err.code || err);
   }
