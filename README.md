@@ -77,3 +77,16 @@ Gym-project/
 | **Gym Customer 2** | `priya@ironpulse.fit` | `member123` |
 
 *(1-click Demo Login buttons are also available right on the Sign-In page.)*
+
+## Multi-gym platform & super admin
+
+- One deployment serves many gyms. Every owner, member, plan, check-in, bill and payment belongs to one gym (`gym_id`),
+  and every API query is scoped to the signed-in user's gym; composite foreign keys stop cross-gym rows in the database.
+- **Super admin** creates gyms (gym name, owner name, owner phone) and gets a one-time owner access code. The owner
+  activates with it on the normal login page (**Access Code** tab), then adds members the usual way.
+- The super admin signs in at a separate, unlinked page: `/platform-console` by default. Change it per deployment with
+  `VITE_ADMIN_LOGIN_PATH=/your-secret-path` in `client/.env` (rebuild the client). The public `/login` rejects super
+  admin accounts, and `/platform-console` rejects owners and members.
+- Create the super admin in production with `SUPERADMIN_EMAIL` / `SUPERADMIN_PASSWORD` in `server/.env`
+  (created on server start if that email doesn't exist). Demo seed: `admin@ironpulse.fit` / `admin123`.
+- Existing single-gym databases upgrade automatically on server start: all current data is assigned to the existing gym.

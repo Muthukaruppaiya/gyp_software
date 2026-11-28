@@ -48,6 +48,19 @@ export function AuthProvider({ children }) {
     return { user: data.user, profile: data.profile, gym: data.gym };
   }
 
+  // Platform super admin: separate endpoint, only reachable from the unlisted admin login page.
+  async function adminLogin(identifier, password) {
+    const data = await apiFetch('/auth/admin-login', {
+      method: 'POST',
+      body: JSON.stringify({ identifier, password }),
+    });
+    setToken(data.token);
+    setUser(data.user);
+    setProfile(null);
+    setGym(null);
+    return data.user;
+  }
+
   async function onboardLogin(onboardingCode) {
     const data = await apiFetch('/auth/onboard-login', {
       method: 'POST',
@@ -75,6 +88,7 @@ export function AuthProvider({ children }) {
         loading,
         login,
         onboardLogin,
+        adminLogin,
         logout,
         refreshSession: loadSession,
         setGym,

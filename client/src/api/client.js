@@ -36,9 +36,11 @@ export async function apiFetch(path, options = {}) {
   // leaving the user on a page where every request fails.
   const sessionDead =
     res.status === 401 || (res.status === 403 && ['ACCOUNT_DEACTIVATED', 'GYM_SUSPENDED'].includes(data.code));
-  if (token && sessionDead && !path.startsWith('/auth/login') && !path.startsWith('/auth/onboard-login')) {
+  if (token && sessionDead && !path.startsWith('/auth/')) {
     setToken(null);
-    if (window.location.pathname !== '/login') window.location.assign('/login');
+    const adminArea = window.location.pathname.startsWith('/admin');
+    const target = adminArea ? import.meta.env.VITE_ADMIN_LOGIN_PATH || '/platform-console' : '/login';
+    if (window.location.pathname !== target) window.location.assign(target);
   }
 
   if (!res.ok) {

@@ -18,7 +18,8 @@ import CustomerProfile from './pages/customer/CustomerProfile';
 import OwnerSetup from './pages/owner/OwnerSetup';
 import AdminDashboard from './pages/admin/AdminDashboard';
 import AdminGymDetail from './pages/admin/AdminGymDetail';
-import { homePath, setupLockPath } from './utils/home';
+import AdminLoginPage from './pages/admin/AdminLoginPage';
+import { ADMIN_LOGIN_PATH, homePath, setupLockPath } from './utils/home';
 
 function ProtectedRoute({ allowedRole, children }) {
   const { user, profile, gym, loading } = useAuth();
@@ -65,6 +66,7 @@ export default function App() {
           <Routes>
             <Route path="/" element={<HomeRedirect />} />
             <Route path="/login" element={<LoginPage />} />
+            <Route path={ADMIN_LOGIN_PATH} element={<AdminLoginPage />} />
 
             {/* Platform Super Admin */}
             <Route

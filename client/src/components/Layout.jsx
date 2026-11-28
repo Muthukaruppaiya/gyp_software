@@ -19,6 +19,7 @@ import {
 import { useAuth } from '../context/AuthContext';
 import MembershipReminderModal from './MembershipReminderModal';
 import { consumeReminderFlag, membershipCountdown, needsRenewalReminder } from '../utils/membership';
+import { ADMIN_LOGIN_PATH } from '../utils/home';
 
 export default function Layout({ children }) {
   const { user, profile, gym, logout } = useAuth();
@@ -70,7 +71,7 @@ export default function Layout({ children }) {
 
   function handleLogout() {
     logout();
-    navigate('/login');
+    navigate(isAdmin ? ADMIN_LOGIN_PATH : '/login');
   }
 
   return (

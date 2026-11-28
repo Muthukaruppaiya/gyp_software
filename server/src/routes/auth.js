@@ -35,8 +35,17 @@ function signToken(user) {
 
 const SUSPENDED_MSG = 'This gym account is suspended. Please contact support.';
 
-// POST /api/auth/login (Email or Phone + Password)
-router.post('/login', loginLimiter, async (req, res) => {
+// The platform super admin signs in only through its own endpoint (separate, unlisted login page).
+// The public gym login treats super admin credentials as invalid, and vice versa.
+const adminLoginLimiter = rateLimit({
+  windowMs: FIFTEEN_MIN,
+  max: 5,
+  keyFn: (req) => `admin|${req.ip}`,
+  message: 'Too many sign-in attempts. Please wait 15 minutes and try again.',
+});
+
+/** scope 'gym' → owners & members only; scope 'admin' → super admin only. */
+const passwordLogin = (scope) => async (req, res) => {
   try {
     const rawIdentifier = (req.body.identifier || req.body.email || '').trim();
     const { password } = req.body;
@@ -67,7 +76,8 @@ router.post('/login', loginLimiter, async (req, res) => {
     }
 
     const valid = await bcrypt.compare(password, user.password_hash);
-    if (!valid) {
+    const allowedHere = scope === 'admin' ? user.role === 'superadmin' : user.role !== 'superadmin';
+    if (!valid || !allowedHere) {
       return res.status(401).json({ error: 'Invalid credentials' });
     }
 
@@ -107,7 +117,12 @@ router.post('/login', loginLimiter, async (req, res) => {
     console.error('Login error:', err);
     res.status(500).json({ error: 'Failed to sign in' });
   }
-});
+};
+
+// POST /api/auth/login (Email or Phone + Password) — gym owners and members
+router.post('/login', loginLimiter, passwordLogin('gym'));
+// POST /api/auth/admin-login — platform super admin only
+router.post('/admin-login', adminLoginLimiter, passwordLogin('admin'));
 
 // POST /api/auth/onboard-login (Client first-time login using Owner-generated code)
 router.post('/onboard-login', onboardLimiter, async (req, res) => {

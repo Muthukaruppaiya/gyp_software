@@ -13,3 +13,9 @@ export function setupLockPath(user, profile, gym) {
   if (user?.role === 'customer' && profile && profile.onboarding_completed === false) return '/member/profile';
   return null;
 }
+
+/**
+ * Unlisted sign-in page for the platform super admin. Not linked anywhere in the app.
+ * Override per deployment with VITE_ADMIN_LOGIN_PATH (e.g. "/ops-7f3k") in client/.env.
+ */
+export const ADMIN_LOGIN_PATH = (import.meta.env.VITE_ADMIN_LOGIN_PATH || '/platform-console').replace(/\/+$/, '');

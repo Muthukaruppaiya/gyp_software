@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Dumbbell, ShieldCheck, User, ArrowRight, KeyRound, Mail, Lock, Eye, EyeOff, Loader2, Globe2 } from 'lucide-react';
+import { Dumbbell, ShieldCheck, User, ArrowRight, KeyRound, Mail, Lock, Eye, EyeOff, Loader2 } from 'lucide-react';
 import { homePath } from '../utils/home';
 import { useAuth } from '../context/AuthContext';
 import { useTransactionPopup } from '../context/TransactionPopupContext';
@@ -199,14 +199,7 @@ export default function LoginPage() {
               <span className="text-[10px] font-bold uppercase tracking-[0.18em] text-white/40">Demo</span>
               <span className="h-px flex-1 bg-white/10" />
             </div>
-            <div className="mt-3 grid grid-cols-3 gap-2">
-              <DemoButton
-                icon={Globe2}
-                disabled={submitting}
-                onClick={() => quickDemoLogin('admin@ironpulse.fit', 'admin123')}
-              >
-                Admin
-              </DemoButton>
+            <div className="mt-3 grid grid-cols-2 gap-2.5">
               <DemoButton
                 icon={ShieldCheck}
                 disabled={submitting}
