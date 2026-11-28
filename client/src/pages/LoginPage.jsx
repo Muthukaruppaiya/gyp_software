@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Dumbbell, ShieldCheck, User, ArrowRight, KeyRound, Mail, Lock, Eye, EyeOff, Loader2 } from 'lucide-react';
+import { Dumbbell, ArrowRight, KeyRound, Mail, Lock, Eye, EyeOff, Loader2 } from 'lucide-react';
 import { homePath } from '../utils/home';
 import { useAuth } from '../context/AuthContext';
 import { useTransactionPopup } from '../context/TransactionPopupContext';
@@ -50,19 +50,6 @@ export default function LoginPage() {
       }
     } catch (err) {
       setError(err.message || 'Authentication failed');
-    } finally {
-      setSubmitting(false);
-    }
-  }
-
-  async function quickDemoLogin(demoEmail, demoPassword) {
-    setError('');
-    setSubmitting(true);
-    try {
-      const { user, profile, gym } = await login(demoEmail, demoPassword);
-      navigate(homePath(user, profile, gym));
-    } catch (err) {
-      setError(err.message || 'Demo login failed');
     } finally {
       setSubmitting(false);
     }
@@ -192,29 +179,6 @@ export default function LoginPage() {
                 )}
               </button>
             </form>
-
-            {/* Demo access */}
-            <div className="mt-5 flex items-center gap-3">
-              <span className="h-px flex-1 bg-white/10" />
-              <span className="text-[10px] font-bold uppercase tracking-[0.18em] text-white/40">Demo</span>
-              <span className="h-px flex-1 bg-white/10" />
-            </div>
-            <div className="mt-3 grid grid-cols-2 gap-2.5">
-              <DemoButton
-                icon={ShieldCheck}
-                disabled={submitting}
-                onClick={() => quickDemoLogin('owner@ironpulse.fit', 'owner123')}
-              >
-                Owner
-              </DemoButton>
-              <DemoButton
-                icon={User}
-                disabled={submitting}
-                onClick={() => quickDemoLogin('arjun@ironpulse.fit', 'member123')}
-              >
-                Member
-              </DemoButton>
-            </div>
           </div>
         </div>
       </div>
@@ -270,18 +234,5 @@ function IconInput({ icon: Icon, trailing, className = '', ...props }) {
       <input {...props} className={`input-glass w-full pl-11 ${trailing ? 'pr-12' : 'pr-4'} py-3.5 text-sm ${className}`} />
       {trailing}
     </div>
-  );
-}
-
-function DemoButton({ icon: Icon, children, ...props }) {
-  return (
-    <button
-      type="button"
-      {...props}
-      className="flex items-center justify-center gap-1.5 rounded-full glass-chip px-2 py-2.5 text-xs font-bold text-white hover:bg-white/20 transition-all disabled:opacity-50"
-    >
-      <Icon className="h-4 w-4 text-[#FF8F4A]" />
-      {children}
-    </button>
   );
 }
